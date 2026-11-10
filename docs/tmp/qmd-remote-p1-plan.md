@@ -1,6 +1,6 @@
 # P1 plan — package scaffold + backend port
 
-**Status:** drafted 2026-10-31. Ready to start (pending: workspace-location confirmation, see P1.0).
+**Status:** ✅ **DONE 2026-10-31** — all checkpoints green (typecheck + 17 tests + smoke + pack dry-run). Next: P2 plan.
 **Parent spec:** `docs/tmp/qmd-remote-package-spec.md` (decisions D1–D14).
 **Source to port:** `../axel-agent/src/qmd-backend/` (≈1 540 lines) + `../axel-agent/tests/qmd-backend.test.ts` (19 tests) + the `qmdKb` block of `tests/config.test.ts`.
 
@@ -137,12 +137,19 @@ vector of fixed dims comes back.
 `dist/` + README + LICENSE + package.json (no tests, no scratch). Not published
 (P6); this just proves the shape.
 
-## Checkpoint/commit sequence
+## Checkpoint/commit sequence — ACTUAL (2026-10-31)
 
-1. scaffold + `npm install` green → commit
-2. types + config + tests green → commit
-3. adapters + their tests green → commit
-4. factory + public entry + smoke green → commit (P1 done → run green gate)
+1. ✅ scaffold + `npm install` green → commit `50cf194`. allowScripts:
+   esbuild + node-llama-cpp approved (mirrors axel-agent); fsevents +
+   tree-sitter left unapproved (prebuilds load at runtime, same as axel-agent).
+2. ✅ types + config + 6 tests green → commit.
+3. ✅ adapters + factory + public entry + 11 more tests + smoke green → commit.
+   Deviation from the drafted sequence: the adapter tests construct through
+   `createBackend`, so the factory joined the adapter commit (one commit
+   instead of two).
+   API refinement: `createBackend` normalizes its input internally (raw `jobs`
+   block accepted; typos fail with a config-path error) — spec D10 updated.
+4. ✅ `npm pack --dry-run`: 17 files, dist + metadata only.
 
 ## Known risks
 

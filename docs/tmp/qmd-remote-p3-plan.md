@@ -1,6 +1,6 @@
 # P3 plan — the `qmd-remote` CLI (spec D7, D8)
 
-**Status:** drafted 2026-10-31. Ready to start.
+**Status:** ✅ **DONE 2026-10-31** — green gate met: all 8 CLI spawn-tests pass against the built dist (status/collections/usage offline; update+embed+query via mock; --lex-only zero-hits; doctor green + 401 red; embed 401 fail-loud). Full suite 34/34. Next: P4 (MCP server).
 **Parent spec:** `docs/tmp/qmd-remote-package-spec.md`.
 **Predecessor:** P2 done — `createStoreRemote` + config file, 26/26 tests, seam proven.
 
@@ -99,12 +99,20 @@ emit that shape; the CLI must not swallow or rewrap it).
   `QMD_CONFIG_DIR` + `INDEX_PATH` → temp index locations (qmd's own override
   envs — `defaultQmdConfigPath`/`defaultQmdDbPath` already honor them).
 
-## Checkpoint/commit sequence
+## Checkpoint/commit sequence — ACTUAL (2026-10-31)
 
-1. cli.ts skeleton + argv + `status` + `collections` → tests 1, 8 green → commit
-2. `update` / `embed` / `query` → tests 2, 3, 6 green → commit
-3. `doctor` (+ dims-drift line) → tests 4, 5 green → commit
-4. bin wiring + pretest build + usage test 7 → commit (P3 done → green gate)
+- Whole CLI implemented in one pass (all six commands), then all 8 tests at
+  once; single commit `a194730`. Deviations from the drafted sequence:
+  - `status`'s per-collection table uses `listCollections()` (`Collection`:
+    `pwd`/`doc_count`) — `getStatus().collections` (CollectionInfo) came back
+    EMPTY after a YAML sync (verified empirically); the global counts still
+    come from `getStatus()`.
+  - dims-drift line dropped: `IndexHealthInfo` has no dims field and the vec
+    table's dims are not reachable via the public API; the doctor reports the
+    probe dims instead, and a real mismatch surfaces via qmd's own
+    embedding-fingerprint bookkeeping on the next `embed` (loud, not silent).
+  - unknown command now prints usage AND the error (test 7 required both).
+  - doctor probe shape: `ok` flag per line; JSON mode emits `{configSource, jobs[], index}`.
 
 ## Known risks / notes
 

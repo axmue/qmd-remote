@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # qmd pulls native deps (node-llama-cpp, better-sqlite3, sqlite-vec).
+      # They must install, but no model is ever downloaded: the test suite is
+      # all-remote against loopback mocks (see tests/helpers/mock-server.ts).
+      - run: npm ci
+      - run: npm run typecheck
+      # The MCP tool surface in src/mcp.ts is a verbatim copy of qmd's internal
+      # server — fail if the pin moved without a deliberate re-sync (spec D3).
+      - run: npm run check:mcp-drift
+      - run: npm test
+      # The publish gate (spec D13): pack the tarball, install it in a fresh
+      # project, drive CLI + SDK + MCP as an external consumer would.
+      - run: npm run test:consumer

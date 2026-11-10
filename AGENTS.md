@@ -4,11 +4,14 @@
 
 The project documentation is organized into functional categories in the `docs/` directory:
 
-- **[Architecture](docs/arch/)**: High-level system design.
-- **[Specifications](docs/specs/)**: Living functional specs.
-- **[Development Guides](docs/dev/)**: to be specified
-- **[Plugin Guides](docs/docs/)**: to be specified.
-- **[ADR Log](docs/adr/index.md)**: The immutable history of architectural decisions.
+- **[Specifications](docs/specs/)**: Living functional specs — start with
+  [`qmd-remote.md`](docs/specs/qmd-remote.md) (decisions D1–D14; the source
+  comments reference them by number).
+- **[ADR Log](docs/adr/index.md)**: decisions taken after the spec interview.
+- **[Working notes](docs/tmp/)**: phase plans (P1–P6), the local-usage
+  walkthrough, code reviews. Kept, never deleted.
+- No `docs/arch/` or `docs/dev/` yet — the spec covers the architecture at this
+  size; add them when the spec stops being enough.
 
 ---
 
@@ -45,4 +48,18 @@ fix gets no plan file — the rot would outweigh the crash risk.
 
 ## ✅ Done When
 
-to be specified
+A change is done when all of these are true:
+
+1. `npm run check` is green — that is `typecheck` + `check:mcp-drift` +
+   the full test suite (which builds `dist/` first via `pretest`, because the
+   CLI and MCP tests spawn the built output).
+2. Behavior that the change claims is covered by a test that **fails without
+   the change**. Provider traffic goes to the loopback mock
+   (`tests/helpers/mock-server.ts`) — the suite stays offline and GPU-free.
+3. Anything touching the packaged surface (exports, `bin`, `files`, deps) also
+   passes `npm run test:consumer` — the packed tarball driven from a fresh
+   consumer project (the publish gate, spec D13).
+4. The reasoning lives on disk: a spec/ADR/plan update for a non-obvious
+   change, and a comment at the seam for anything that depends on qmd's
+   internals (which version, which file, why).
+5. Committed at that green point — the last green commit is the recovery point.

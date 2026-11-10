@@ -126,3 +126,11 @@ Drive the built server the way a real agent would:
 - The `qmd://` resource uses `decodeURIComponent` + `store.get` — copied as-is.
 - Server is HTTP-free (stdio only) in v1; an `--http <port>` mode can ride on
   qmd's exported `createMcpHandler` later if asked (out of scope).
+
+## Correction (2026-11-10, code review)
+
+The claim above that `getStatus().collections` "came back EMPTY after a YAML
+sync" could NOT be reproduced on review: on a fresh temp index `status --json`
+returns a fully populated `collections[]` (now pinned by a regression test in
+`tests/cli.test.ts`). Both idioms in the codebase are therefore valid; the
+workarounds were unnecessary, not wrong. See `docs/tmp/review-2026-11-10.md` §1.

@@ -107,6 +107,9 @@ emit that shape; the CLI must not swallow or rewrap it).
     `pwd`/`doc_count`) — `getStatus().collections` (CollectionInfo) came back
     EMPTY after a YAML sync (verified empirically); the global counts still
     come from `getStatus()`.
+  - the expand probe originally went through `expandQuery()`, which swallows
+    provider errors by design — a dead expand provider was reported GREEN with
+    exit 0. Fixed on 2026-11-10 (review §2.1): the probe now uses `generate()`.
   - dims-drift line dropped: `IndexHealthInfo` has no dims field and the vec
     table's dims are not reachable via the public API; the doctor reports the
     probe dims instead, and a real mismatch surfaces via qmd's own
@@ -131,3 +134,11 @@ emit that shape; the CLI must not swallow or rewrap it).
   the point: pay 5 s now, not 30 min later).
 - Keep CLI output plain-text and greppable (no colors in v1; `--json` covers
   machine consumption).
+
+## Correction (2026-11-10, code review)
+
+The claim above that `getStatus().collections` "came back EMPTY after a YAML
+sync" could NOT be reproduced on review: on a fresh temp index `status --json`
+returns a fully populated `collections[]` (now pinned by a regression test in
+`tests/cli.test.ts`). Both idioms in the codebase are therefore valid; the
+workarounds were unnecessary, not wrong. See `docs/tmp/review-2026-11-10.md` §1.

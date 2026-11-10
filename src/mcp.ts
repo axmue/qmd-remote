@@ -14,6 +14,14 @@
  * Stdio purity: this module must never write to stdout outside protocol
  * frames (no console.log in the server path; console.error is safe).
  */
+
+/**
+ * The qmd version this file's tool surface was copied from.
+ * `npm run check:mcp-drift` compares the copy against the INSTALLED qmd (tool
+ * names + input-schema keys) and fails when the pin moves, so a bump forces a
+ * deliberate re-sync instead of silently serving a stale surface.
+ */
+export const COPIED_FROM_QMD_VERSION = "2.8.3";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES, type QMDStore } from "@tobilu/qmd";
 import { z } from "zod";

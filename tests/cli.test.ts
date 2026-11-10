@@ -277,3 +277,18 @@ test("query: `--` ends option parsing so search text may start with a dash", asy
   r = await runCli(f, ["query", "--lex-only", "-banana"]);
   assert.equal(r.code, 2, "without `--` a leading dash is still an unknown option");
 });
+
+test("status --json: getStatus().collections IS populated (settles the P3/P4 'comes back empty' claim)", async () => {
+  // P3 and P4 both worked around an allegedly empty `getStatus().collections`
+  // by using listCollections(). It is not empty — this test pins that so the
+  // two idioms in the codebase (CLI table vs. MCP status tool) stay valid.
+  const f = makeFixture(ALL_LOCAL);
+  let r = await runCli(f, ["update"]);
+  assert.equal(r.code, 0, r.err);
+  r = await runCli(f, ["status", "--json"]);
+  assert.equal(r.code, 0, r.err);
+  const status = JSON.parse(r.out) as { totalDocuments: number; collections: { name: string; documents: number }[] };
+  assert.equal(status.totalDocuments, 3);
+  assert.deepEqual(status.collections.map((c) => c.name), ["cli"]);
+  assert.equal(status.collections[0]!.documents, 3);
+});

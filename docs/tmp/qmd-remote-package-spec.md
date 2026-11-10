@@ -77,8 +77,7 @@ auth.json key resolution, bridge env mechanics, `AXEL_*` naming, the dist patch.
   tool definitions copied once from dist/mcp/server.js; handlers → remote-wired store.
   Green: MCP e2e (client handshake, tools/list, tools/call query) against mock provider
   + EOF shutdown. 35/35 total.
-- **P5 consumer test (still local):** `npm pack` → scratch project installs the
-  tarball → run CLI + MCP against a real index with mock/real providers as an
-  external consumer would. Gate for publishing.
+- **P5 consumer test (still local):** ✅ DONE 2026-10-31 — `npm pack` → scratch project installs the
+  tarball → CLI + SDK + MCP exercised as an external consumer would. **6/6 = publish gate met.**
 - **P6 publish (admin, D13):** GitHub repo (public), npm account, `npm publish`,
   CI compat job (D11) live.

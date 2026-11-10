@@ -1,6 +1,6 @@
 # P5 plan — local consumer test (the publish gate, spec D13)
 
-**Status:** drafted 2026-10-31. Ready to start.
+**Status:** ✅ **DONE 2026-10-31** — 6/6 checks green from a fresh temp consumer (single qmd copy, bin, SDK, CLI incl. doctor green+401-red, MCP over stdio). **PUBLISH GATE MET.** Next: P6 (publish — admin, user-driven).
 **Parent spec:** `docs/tmp/qmd-remote-package-spec.md` (D5, D13).
 **Predecessor:** P1–P4 done — 35/35 tests; SDK + CLI + MCP all proven in-repo.
 
@@ -58,11 +58,16 @@ in-repo tests use).
 - `npm publish`, GitHub, CI wiring — that's P6.
 - HTTP MCP mode — not in v1.
 
-## Checkpoint/commit sequence
+## Checkpoint/commit sequence — ACTUAL (2026-10-31)
 
-1. `scripts/consumer-test.mjs` (steps 1–4 + 8 skeleton) → runs green for pack/bin/single-copy → commit
-2. SDK + CLI steps (5–6) → commit
-3. MCP step (7) → commit (P5 done → green gate = the whole script green)
+- Whole script written in one pass, single commit `a63d8af` (the script +
+  its fixes are one unit; 6/6 on the final run).
+- Devised-while-running fixes (kept in the script):
+  - qmd's exports map is ESM-only (`"import"`+`"types"`, no `"require"`)
+    → the single-copy check must use `import.meta.resolve` (CJS
+    `require.resolve` throws ERR_PACKAGE_PATH_NOT_EXPORTED).
+  - macOS `mkdtemp` = `/var/folders/…` but resolved URLs canonicalize to
+    `/private/var/folders/…` → assert against `realpathSync(consumer)`.
 
 ## Known risks / notes
 

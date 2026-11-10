@@ -1,6 +1,6 @@
 # P4 plan — own MCP server (spec D3, v1 scope)
 
-**Status:** drafted 2026-10-31. Ready to start.
+**Status:** ✅ **DONE 2026-10-31** — green gate met: MCP e2e (real client over stdio: initialize → tools/list = 4 tools → query/get/status → provider hits → server exits on client close) passes; full suite 35/35. Next: P5 (local consumer test, the publish gate).
 **Parent spec:** `docs/tmp/qmd-remote-package-spec.md`.
 **Source to copy from:** `node_modules/@tobilu/qmd/dist/mcp/server.js`
 (`createMcpServer(store, inflight)` at :122 — **not exported** by qmd; its
@@ -90,12 +90,22 @@ Drive the built server the way a real agent would:
 - README stub: one line about `qmd-remote mcp`.
 - Plan/spec ticks.
 
-## Checkpoint/commit sequence
+## Checkpoint/commit sequence — ACTUAL (2026-10-31)
 
-1. P4.1 deps + mcp.ts (copy, not rewrite) + a first in-process client test → commit
-2. P4.2 CLI `mcp` subcommand + spawn handshake test → commit
-3. P4.3 full MCP e2e (tools/call over stdio vs mock) → commit (P4 done → gate)
-4. P4.4 exports + docs → commit
+- All of P4.1–P4.4 landed in one commit `0652860` (mcp.ts + CLI `mcp` +
+  exports + e2e), since the server, wiring, and test are one interlocked unit.
+- Deviations from the drafted plan:
+  - **own InflightGate** (curried `track(cb) → wrapped cb`, mirroring qmd's
+    exported gate's observable behavior) instead of importing qmd's
+    `createInflightGate` — it lives in a subpath the exports map blocks, and a
+    30-line gate is less coupling than another file-URL import.
+  - instructions' collection list uses `listCollections()` (qmd's used
+    `status.collections`, which we verified comes back empty after a YAML sync —
+    same bug as in the CLI, P3).
+  - `mcp` keeps stdout pure: load errors from `loadRemoteConfig`/`createStore`
+    still print to stderr via main()'s catch — protocol-safe.
+  - the one deliberate wording delta in the verbatim copy: `qmd embed` →
+    `qmd-remote embed` in instructions (documented in the source header).
 
 ## Known risks / notes
 

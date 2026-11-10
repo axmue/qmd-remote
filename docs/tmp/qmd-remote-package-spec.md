@@ -73,10 +73,10 @@ auth.json key resolution, bridge env mechanics, `AXEL_*` naming, the dist patch.
   hits (this doubles as the D11 compat test). Green: e2e passes (26/26 total).
 - **P3 CLI:** ✅ DONE 2026-10-31 — the six v1 subcommands + `doctor` probes +
   fail-loud errors. Green: CLI e2e via child_process against mock provider (8 tests; 34/34 total).
-- **P4 MCP server:** own thin MCP server (stdio; HTTP later if asked); tool
-  definitions copied once from dist/mcp/server.js; handlers → remote-wired store.
-  Green: MCP e2e (client handshake, tools/list, tools/call query) against mock
-  provider.
+- **P4 MCP server:** ✅ DONE 2026-10-31 — own thin MCP server (stdio; HTTP later if asked);
+  tool definitions copied once from dist/mcp/server.js; handlers → remote-wired store.
+  Green: MCP e2e (client handshake, tools/list, tools/call query) against mock provider
+  + EOF shutdown. 35/35 total.
 - **P5 consumer test (still local):** `npm pack` → scratch project installs the
   tarball → run CLI + MCP against a real index with mock/real providers as an
   external consumer would. Gate for publishing.

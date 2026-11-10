@@ -68,9 +68,9 @@ auth.json key resolution, bridge env mechanics, `AXEL_*` naming, the dist patch.
   requirement; corrects the earlier "≥20"), MIT); ported
   `qmd-backend` + tests; `createBackend` door. Green: offline suite (17) + smoke.
   `qmd-backend` + tests; `createBackend` door. Green: offline suite.
-- **P2 seam:** `createStoreRemote` + `~/.config/qmd-remote/config.json` loading;
+- **P2 seam:** ✅ DONE 2026-10-31 — `createStoreRemote` + `~/.config/qmd-remote/config.json` loading;
   e2e smoke: temp store + mock provider → `update`+`embed`+`search` assert remote
-  hits (this doubles as the D11 compat test). Green: e2e passes.
+  hits (this doubles as the D11 compat test). Green: e2e passes (26/26 total).
 - **P3 CLI:** the six v1 subcommands + `doctor` probes + fail-loud errors.
   Green: CLI e2e via child_process against mock provider.
 - **P4 MCP server:** own thin MCP server (stdio; HTTP later if asked); tool

@@ -1,6 +1,6 @@
 # P2 plan — `createStoreRemote` + config file + the e2e seam proof
 
-**Status:** drafted 2026-10-31. Ready to start.
+**Status:** ✅ **DONE 2026-10-31** — green gate met: 26/26 offline tests incl. the e2e seam proof (update+embed+search all routed through the mock provider on a real unpatched store; banana.md #1 via remote rerank). Next: P3 (CLI).
 **Parent spec:** `docs/tmp/qmd-remote-package-spec.md` (D2, D6, D9, D10, D11).
 **Predecessor:** P1 done — `createBackend(jobs)` + `normalizeJobs` + adapters, 17 green tests.
 
@@ -121,12 +121,17 @@ await store.close();
 - Plan/spec: check the boxes; P2 marked done. (README user-facing docs wait
   for P6, as planned.)
 
-## Checkpoint/commit sequence
+## Checkpoint/commit sequence — ACTUAL (2026-10-31)
 
-1. P2.1 config-file + tests green → commit
-2. P2.2 store helper + its tests green → commit
-3. P2.3 e2e seam test green → commit (P2 done → run green gate)
-4. P2.4 exports + doc ticks → commit
+1. ✅ P2.1 config-file + tests → commit `135104a` (21/21)
+2. ✅ P2.2 store helper + tests + helper extraction (mock-server, FakeLlamaCpp) → commit `cff8dea` (25/25)
+   - note: `getDefaultDbPath()` (qmd's export) throws outside its "production mode"
+     flag, so the stock defaults are MIRRORED locally (`defaultQmdDbPath` /
+     `defaultQmdConfigPath`), documented as pinned-2.8.3 conventions.
+3. ✅ P2.3 e2e seam proof → PASSED first real run (1.9 s) — commit `b33cd36` (26/26)
+   - all plan assertions held exactly: update() = 0 embed hits; embed() > 0;
+     search() hit rerank + chat/completions; banana doc #1.
+4. ✅ P2.4 public exports + doc ticks → same commit `b33cd36`.
 
 ## Known risks / notes
 

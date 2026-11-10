@@ -72,6 +72,7 @@ export class OpenAiCompatAdapter {
       apiKey: this.job.apiKey,
       extraHeaders: this.job.headers,
       timeoutMs: this.timeoutMs,
+      maxRetries: this.job.maxRetries,
     });
   }
 
@@ -82,25 +83,41 @@ export class OpenAiCompatAdapter {
     return { embedding: first.embedding, model: this.name };
   }
 
-  async embedBatch(texts: string[], options: QmdEmbedOptions = {}): Promise<QmdEmbeddingResult[]> {
+  /**
+   * Batch embed. A response that is short or has holes yields `null` at the
+   * affected positions rather than throwing: qmd calls this in batches of 32
+   * and records per-chunk failures (`"batch embedding returned no vector"`),
+   * then retries them — so one bad input costs one chunk, not 32. Transport
+   * and auth failures still throw (fail-loud, spec D7).
+   */
+  async embedBatch(texts: string[], options: QmdEmbedOptions = {}): Promise<(QmdEmbeddingResult | null)[]> {
     if (texts.length === 0) return [];
     const res = await this.post<EmbedResponse>("/embeddings", {
       model: this.job.model,
       input: texts.map((t) => this.applyPrefix(t, options)),
     });
-    if (!res.data || res.data.length !== texts.length) {
-      throw new Error(`qmd-remote: embed (openai-compat ${this.job.model}) returned ${res.data?.length ?? 0} of ${texts.length} embeddings`);
+    if (!res.data || res.data.length === 0) {
+      throw new Error(`qmd-remote: embed (openai-compat ${this.job.model}) returned no embeddings for ${texts.length} inputs`);
     }
     const byIndex = new Map<number, number[]>();
-    res.data.forEach((d, i) => byIndex.set(d.index ?? i, d.embedding!));
+    res.data.forEach((d, i) => {
+      if (d.embedding) byIndex.set(d.index ?? i, d.embedding);
+    });
+    if (byIndex.size < texts.length) {
+      console.error(
+        `qmd-remote: embed (openai-compat ${this.job.model}) returned ${byIndex.size} of ${texts.length} embeddings — the missing chunks are reported as errors and retried`,
+      );
+    }
     return texts.map((_, i) => {
       const embedding = byIndex.get(i);
-      if (!embedding) throw new Error(`qmd-remote: embed (openai-compat ${this.job.model}) batch response missing embedding at index ${i}`);
-      return { embedding, model: this.name };
+      return embedding ? { embedding, model: this.name } : null;
     });
   }
 
-  async rerank(query: string, documents: QmdRerankDocument[], options: { model?: string } = {}): Promise<QmdRerankResult> {
+  // NOTE: qmd may pass `options.model`; a qmd-remote job is pinned to the
+  // model in its config, so the override is deliberately ignored (the name
+  // getters must stay stable — they feed qmd's embedding fingerprints).
+  async rerank(query: string, documents: QmdRerankDocument[], _options: { model?: string } = {}): Promise<QmdRerankResult> {
     const maxChars = this.job.rerankMaxChars ?? DEFAULT_RERANK_MAX_CHARS;
     const res = await this.post<RerankResponse>("/rerank", {
       model: this.job.model,
@@ -110,7 +127,7 @@ export class OpenAiCompatAdapter {
     });
     if (!res.results) throw new Error(`qmd-remote: rerank (openai-compat ${this.job.model}) returned no results`);
     const results = res.results
-      .map((r, _i) => {
+      .map((r) => {
         const idx = r.index;
         if (typeof idx !== "number" || idx < 0 || idx >= documents.length) return null;
         const score = r.relevance_score ?? r.score ?? 0;

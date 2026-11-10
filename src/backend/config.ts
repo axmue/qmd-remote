@@ -7,6 +7,7 @@
  * silently fall back to local models.
  */
 import type { RemoteJobConfig, RemoteJobs, RemoteProvider } from "./types.js";
+import { resolveSecret } from "./secrets.js";
 
 /** All-local jobs — qmd's exact upstream behavior (default is always local). */
 export const DEFAULT_REMOTE_JOBS: RemoteJobs = {
@@ -25,6 +26,7 @@ const JOB_FIELDS = new Set([
   "baseUrl",
   "apiKey",
   "timeoutMs",
+  "maxRetries",
   "headers",
   "embedQueryPrefix",
   "embedDocPrefix",
@@ -37,6 +39,20 @@ const JOB_FIELDS = new Set([
  * defaults). Throws on any malformation with a message that names the exact
  * path (e.g. `jobs.embed.baseUrl`).
  */
+/** De-duplicate advisory warnings within one process (normalizeJobs runs more than once per command). */
+const warned = new Set<string>();
+function warnOnce(message: string): void {
+  if (warned.has(message)) return;
+  warned.add(message);
+  // stderr only — stdout is the MCP protocol channel.
+  console.error(message);
+}
+
+/** Loopback hosts may legitimately speak cleartext http (Ollama, llama.cpp server). */
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]" || hostname.endsWith(".localhost");
+}
+
 export function normalizeJobs(raw: unknown, blockName = "jobs"): RemoteJobs {
   if (raw === undefined || raw === null) {
     return cloneJobs(DEFAULT_REMOTE_JOBS);
@@ -90,13 +106,21 @@ function normalizeJob(raw: unknown, what: string): RemoteJobConfig {
   }
   if (o.apiKey !== undefined) {
     if (typeof o.apiKey !== "string" || o.apiKey.trim() === "") throw new Error(`config: ${what}.apiKey must be a non-empty string`);
-    job.apiKey = o.apiKey;
+    // "env:VAR" / "file:/path" are resolved here so a missing secret is a
+    // startup error, not a 401 halfway through an embed run.
+    job.apiKey = resolveSecret(o.apiKey, `${what}.apiKey`);
   }
   if (o.timeoutMs !== undefined) {
     if (!Number.isFinite(o.timeoutMs) || (o.timeoutMs as number) < 1_000) {
       throw new Error(`config: ${what}.timeoutMs must be a number >= 1000 (ms)`);
     }
     job.timeoutMs = o.timeoutMs as number;
+  }
+  if (o.maxRetries !== undefined) {
+    if (!Number.isInteger(o.maxRetries) || (o.maxRetries as number) < 0 || (o.maxRetries as number) > 10) {
+      throw new Error(`config: ${what}.maxRetries must be an integer between 0 and 10`);
+    }
+    job.maxRetries = o.maxRetries as number;
   }
   if (o.headers !== undefined) {
     if (typeof o.headers !== "object" || o.headers === null || Array.isArray(o.headers)) {
@@ -127,6 +151,14 @@ function normalizeJob(raw: unknown, what: string): RemoteJobConfig {
     }
     if (job.provider === "openai-compat" && !job.baseUrl) {
       throw new Error(`config: ${what} with provider "openai-compat" requires a "baseUrl" (e.g. "https://api.jina.ai/v1")`);
+    }
+    // Cleartext + credentials to a remote host: not an error (some gateways
+    // live behind a private network), but never silent.
+    if (job.apiKey && job.baseUrl?.startsWith("http://")) {
+      const host = new URL(job.baseUrl).hostname;
+      if (!isLoopbackHost(host)) {
+        warnOnce(`qmd-remote: WARNING ${what} sends its apiKey over cleartext http to ${host} — use https if the endpoint supports it`);
+      }
     }
   } else {
     // A local job is served by qmd's bundled GGUF models — the remote fields

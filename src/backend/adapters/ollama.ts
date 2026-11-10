@@ -71,6 +71,7 @@ export class OllamaAdapter {
       apiKey: this.job.apiKey,
       extraHeaders: this.job.headers,
       timeoutMs: this.timeoutMs,
+      maxRetries: this.job.maxRetries,
     });
   }
 
@@ -82,7 +83,8 @@ export class OllamaAdapter {
     return { embedding, model: this.name };
   }
 
-  async embedBatch(texts: string[], options: QmdEmbedOptions = {}): Promise<QmdEmbeddingResult[]> {
+  /** Batch embed; short/holey responses yield `null` per position (see the openai-compat adapter). */
+  async embedBatch(texts: string[], options: QmdEmbedOptions = {}): Promise<(QmdEmbeddingResult | null)[]> {
     if (texts.length === 0) return [];
     const res = await this.post<OllamaEmbedResponse>("/api/embed", {
       model: this.job.model,
@@ -90,13 +92,22 @@ export class OllamaAdapter {
     });
     if (res.error) throw new Error(`qmd-remote: embed (ollama ${this.job.model}) batch failed: ${res.error}`);
     const embeddings = res.embeddings ?? (res.embedding ? [res.embedding] : undefined);
-    if (!embeddings || embeddings.length !== texts.length) {
-      throw new Error(`qmd-remote: embed (ollama ${this.job.model}) returned ${embeddings?.length ?? 0} of ${texts.length} embeddings — the Ollama server must support array input on /api/embed`);
+    if (!embeddings || embeddings.length === 0) {
+      throw new Error(`qmd-remote: embed (ollama ${this.job.model}) returned no embeddings for ${texts.length} inputs — the Ollama server must support array input on /api/embed`);
     }
-    return embeddings.map((embedding) => ({ embedding, model: this.name }));
+    if (embeddings.length < texts.length) {
+      console.error(
+        `qmd-remote: embed (ollama ${this.job.model}) returned ${embeddings.length} of ${texts.length} embeddings — the missing chunks are reported as errors and retried`,
+      );
+    }
+    return texts.map((_, i) => {
+      const embedding = embeddings[i];
+      return embedding ? { embedding, model: this.name } : null;
+    });
   }
 
-  async rerank(query: string, documents: QmdRerankDocument[], options: { model?: string } = {}): Promise<QmdRerankResult> {
+  // `options.model` is ignored on purpose — see the openai-compat adapter.
+  async rerank(query: string, documents: QmdRerankDocument[], _options: { model?: string } = {}): Promise<QmdRerankResult> {
     const maxChars = this.job.rerankMaxChars ?? DEFAULT_RERANK_MAX_CHARS;
     const res = await this.post<OllamaRerankResponse>("/api/rerank", {
       model: this.job.model,

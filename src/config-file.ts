@@ -6,10 +6,11 @@
  * ~/.config/qmd-remote/config.json). An absent file is NOT an error — it
  * means all-local defaults (D6: default is always local).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { normalizeJobs } from "./backend/config.js";
+import { isSecretReference } from "./backend/secrets.js";
 import type { RemoteJobs } from "./backend/types.js";
 
 /** Remote env var overriding the config file path. */
@@ -54,5 +55,38 @@ export function loadRemoteConfig(path?: string, env: NodeJS.ProcessEnv = process
       throw new Error(`qmd-remote: config file ${resolved} has unknown top-level key "${key}" (expected: "jobs")`);
     }
   }
-  return { jobs: normalizeJobs(o.jobs, "jobs (in " + resolved + ")"), source: resolved };
+  const jobs = normalizeJobs(o.jobs, "jobs (in " + resolved + ")");
+  warnOnLooseFileMode(resolved, o.jobs);
+  return { jobs, source: resolved };
+}
+
+/**
+ * A literal provider key in a group/world-readable file is the most common way
+ * these credentials leak. We do not refuse to run (that would strand users
+ * mid-task) but we say it once, on stderr, and only when the file actually
+ * holds a literal secret (`env:`/`file:` indirections are fine).
+ */
+function warnOnLooseFileMode(path: string, rawJobs: unknown): void {
+  if (process.platform === "win32") return;
+  if (!containsLiteralSecret(rawJobs)) return;
+  let mode: number;
+  try {
+    mode = statSync(path).mode;
+  } catch {
+    return;
+  }
+  if ((mode & 0o077) === 0) return;
+  console.error(
+    `qmd-remote: WARNING ${path} contains a literal apiKey and is readable by others (mode ${(mode & 0o777).toString(8)}) — ` +
+      `run 'chmod 600 ${path}', or use an "env:YOUR_VAR" / "file:/path/to/secret" apiKey instead`,
+  );
+}
+
+function containsLiteralSecret(rawJobs: unknown): boolean {
+  if (typeof rawJobs !== "object" || rawJobs === null) return false;
+  return Object.values(rawJobs as Record<string, unknown>).some((job) => {
+    if (typeof job !== "object" || job === null) return false;
+    const key = (job as { apiKey?: unknown }).apiKey;
+    return typeof key === "string" && !isSecretReference(key);
+  });
 }

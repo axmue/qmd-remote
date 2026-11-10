@@ -19,7 +19,9 @@ export {
   OllamaAdapter,
   DEFAULT_OLLAMA_BASE_URL,
 } from "./backend/adapters/ollama.js";
-export { createStoreRemote, defaultQmdDbPath, defaultQmdConfigPath } from "./store-remote.js";
+export { createStoreRemote, defaultQmdDbPath, defaultQmdConfigPath, findLocalQmdIndex } from "./store-remote.js";
+export { resolveSecret, isSecretReference, redactSecrets } from "./backend/secrets.js";
+export { packageVersion } from "./version.js";
 export type { CreateStoreRemoteOptions, QmdStore } from "./store-remote.js";
 export { createQmdRemoteMcpServer, InflightGate } from "./mcp.js";
 export type { QmdRemoteMcpServerOptions } from "./mcp.js";

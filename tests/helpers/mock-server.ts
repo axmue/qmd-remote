@@ -9,6 +9,8 @@ import type { AddressInfo } from "node:net";
 export interface RouteResult {
   /** non-2xx status to respond with (200 when absent). */
   _status?: number;
+  /** extra response headers (e.g. `{ "retry-after": "0" }`). */
+  _headers?: Record<string, string>;
   [key: string]: unknown;
 }
 export type RouteFn = (body: Record<string, unknown>) => RouteResult;
@@ -41,8 +43,8 @@ export async function startMockServer(routes: Record<string, RouteFn>): Promise<
       hits[req.url ?? ""].push(body);
       const out = route(body);
       const status = out._status ?? 200;
-      const { _status: _drop, ...payload } = out;
-      res.writeHead(status, { "content-type": "application/json" });
+      const { _status: _drop, _headers: extraHeaders, ...payload } = out;
+      res.writeHead(status, { "content-type": "application/json", ...extraHeaders });
       res.end(JSON.stringify(payload));
     });
   });

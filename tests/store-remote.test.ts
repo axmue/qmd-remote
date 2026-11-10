@@ -5,10 +5,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createStoreRemote } from "../src/store-remote.js";
+import { createStoreRemote, defaultQmdConfigPath, defaultQmdDbPath, findLocalQmdIndex } from "../src/store-remote.js";
 import { FakeLlamaCpp } from "./helpers/fake-llamacpp.js";
 import type { QmdLlmBackend } from "../src/backend/types.js";
 
@@ -102,5 +102,70 @@ test("default configPath: stock qmd yaml is picked up; null forces DB-only", asy
   } finally {
     if (saved === undefined) delete process.env.QMD_CONFIG_DIR;
     else process.env.QMD_CONFIG_DIR = saved;
+  }
+});
+
+// =============================================================================
+// Project-local index discovery (review §4.4): stock `qmd` prefers a
+// `.qmd/index.y(a)ml` found by walking up from the cwd, with the sqlite file
+// next to it. qmd-remote must resolve the same files or it silently queries a
+// different index than the one `qmd` built.
+// =============================================================================
+
+test("findLocalQmdIndex / default paths: a project-local .qmd wins over the global locations", () => {
+  const root = mkdtempSync(join(tmpdir(), "qmd-remote-local-"));
+  const nested = join(root, "a", "b");
+  mkdirSync(nested, { recursive: true });
+  mkdirSync(join(root, ".qmd"), { recursive: true });
+  writeFileSync(join(root, ".qmd", "index.yml"), "collections: {}\n");
+
+  const found = findLocalQmdIndex(nested);
+  assert.equal(found?.configPath, join(root, ".qmd", "index.yml"));
+  assert.equal(found?.dbPath, join(root, ".qmd", "index.sqlite"));
+
+  // resolution order: env override > project-local > global
+  const env = { HOME: root, XDG_CONFIG_HOME: join(root, "xdg-config"), XDG_CACHE_HOME: join(root, "xdg-cache") };
+  assert.equal(defaultQmdConfigPath(env, nested), join(root, ".qmd", "index.yml"));
+  assert.equal(defaultQmdDbPath(env, nested), join(root, ".qmd", "index.sqlite"));
+  assert.equal(defaultQmdConfigPath({ ...env, QMD_CONFIG_DIR: "/tmp/forced" }, nested), join("/tmp/forced", "index.yml"));
+  assert.equal(defaultQmdDbPath({ ...env, INDEX_PATH: "/tmp/forced.sqlite" }, nested), "/tmp/forced.sqlite");
+
+  // no .qmd anywhere above → the stock global locations (XDG honored)
+  const bare = mkdtempSync(join(tmpdir(), "qmd-remote-bare-"));
+  assert.equal(defaultQmdConfigPath(env, bare), join(root, "xdg-config", "qmd", "index.yml"));
+  assert.equal(defaultQmdDbPath(env, bare), join(root, "xdg-cache", "qmd", "index.sqlite"));
+
+  // HOME wins over os.homedir(), like qmd's own qmdHomedir()
+  assert.equal(defaultQmdConfigPath({ HOME: "/tmp/fakehome" }, bare), "/tmp/fakehome/.config/qmd/index.yml");
+  assert.equal(defaultQmdDbPath({ HOME: "/tmp/fakehome" }, bare), "/tmp/fakehome/.cache/qmd/index.sqlite");
+});
+
+test("a project-local .qmd index is actually used by createStoreRemote", async () => {
+  const root = mkdtempSync(join(tmpdir(), "qmd-remote-localstore-"));
+  const docs = join(root, "docs");
+  mkdirSync(docs, { recursive: true });
+  writeFileSync(join(docs, "note.md"), "# Local note\n\nproject-local index content.\n");
+  mkdirSync(join(root, ".qmd"), { recursive: true });
+  writeFileSync(join(root, ".qmd", "index.yml"), `collections:\n  local:\n    path: ${docs}\n`);
+
+  const savedCwd = process.cwd();
+  const savedCfgDir = process.env.QMD_CONFIG_DIR;
+  const savedIndex = process.env.INDEX_PATH;
+  delete process.env.QMD_CONFIG_DIR;
+  delete process.env.INDEX_PATH;
+  process.chdir(root);
+  try {
+    const store = await createStoreRemote({ jobs: ALL_LOCAL, llamaCtor: FakeLlamaCpp });
+    try {
+      const cols = await store.listCollections();
+      assert.deepEqual(cols.map((c) => c.name), ["local"], "the project-local collection must be the one that loads");
+      assert.ok(existsSync(join(root, ".qmd", "index.sqlite")), "the paired sqlite file is created next to the local config");
+    } finally {
+      await store.close();
+    }
+  } finally {
+    process.chdir(savedCwd);
+    if (savedCfgDir !== undefined) process.env.QMD_CONFIG_DIR = savedCfgDir;
+    if (savedIndex !== undefined) process.env.INDEX_PATH = savedIndex;
   }
 });

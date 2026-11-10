@@ -13,6 +13,9 @@ import { loadRemoteConfig } from "./config-file.js";
 import { createBackend } from "./backend/factory.js";
 import { createStoreRemote, defaultQmdDbPath, defaultQmdConfigPath } from "./store-remote.js";
 import { createQmdRemoteMcpServer, InflightGate } from "./mcp.js";
+import { EXPAND_PROMPT, parseExpansion } from "./backend/adapters/shared.js";
+import { redactSecrets } from "./backend/secrets.js";
+import { packageVersion } from "./version.js";
 import type { QmdStore } from "./store-remote.js";
 import type { RemoteJobs } from "./backend/types.js";
 
@@ -31,11 +34,14 @@ Commands:
   collections list | add <name> <path> [--pattern <glob>] | remove <name>
 
 Options:
-  -d, --db <path>     index.sqlite (default: stock qmd location)
-      --config <path> index.yml   (default: stock qmd location, if present)
-      --json            machine-readable output (status, collections, doctor)
+  -d, --db <path>     index.sqlite (default: stock qmd location, or .qmd/index.sqlite)
+      --config <path> index.yml   (default: stock qmd location, or .qmd/index.yml)
+      --jobs <path>   models config JSON (default: $QMD_REMOTE_CONFIG or ~/.config/qmd-remote/config.json)
+      --json          machine-readable output (status, collections, doctor, query)
   -h, --help          usage
+  -V, --version       print the version
 
+Use \`--\` to end option parsing: qmd-remote query -- -not-an-option
 Config: $QMD_REMOTE_CONFIG or ~/.config/qmd-remote/config.json — see README.`;
 
 interface Parsed {
@@ -43,26 +49,71 @@ interface Parsed {
   collections: string[];
   db?: string;
   config?: string;
+  /** path to the models (jobs) config file — --jobs, overrides $QMD_REMOTE_CONFIG. */
+  jobs?: string;
   json: boolean;
   force: boolean;
   noRerank: boolean;
   lexOnly: boolean;
   limit?: number;
   pattern?: string;
+  help: boolean;
+  version: boolean;
+  /** canonical names of the options actually given (for per-command validation). */
+  seen: Set<string>;
 }
 
-const VALUE_FLAGS = new Set(["-d", "--db", "--config", "-n", "--limit", "-c", "--collection", "--pattern"]);
-const BOOL_FLAGS = new Set(["--json", "--force", "--no-rerank", "--lex-only", "-h", "--help"]);
+const VALUE_FLAGS = new Map<string, string>([
+  ["-d", "db"],
+  ["--db", "db"],
+  ["--config", "config"],
+  ["--jobs", "jobs"],
+  ["-n", "limit"],
+  ["--limit", "limit"],
+  ["-c", "collection"],
+  ["--collection", "collection"],
+  ["--pattern", "pattern"],
+]);
+const BOOL_FLAGS = new Map<string, string>([
+  ["--json", "json"],
+  ["--force", "force"],
+  ["--no-rerank", "no-rerank"],
+  ["--lex-only", "lex-only"],
+]);
+
+/**
+ * Which options each command accepts. A flag that a command ignores is a
+ * silent lie (`status --force` used to be accepted and discarded), so the
+ * table is enforced — unknown-for-this-command is a usage error.
+ */
+const COMMAND_FLAGS: Record<string, string[]> = {
+  update: ["db", "config", "jobs", "json", "collection"],
+  embed: ["db", "config", "jobs", "json", "collection", "force"],
+  query: ["db", "config", "jobs", "json", "collection", "limit", "no-rerank", "lex-only"],
+  status: ["db", "config", "jobs", "json"],
+  doctor: ["db", "config", "jobs", "json"],
+  mcp: ["db", "config", "jobs"],
+  collections: ["db", "config", "jobs", "json", "pattern"],
+};
 
 function parseArgs(argv: string[]): Parsed {
-  const p: Parsed = { positionals: [], collections: [], json: false, force: false, noRerank: false, lexOnly: false };
+  const p: Parsed = { positionals: [], collections: [], json: false, force: false, noRerank: false, lexOnly: false, help: false, version: false, seen: new Set() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === "--") {
+      // everything after `--` is literal (search text starting with "-", …)
+      p.positionals.push(...argv.slice(i + 1));
+      break;
+    }
     if (a === "-h" || a === "--help") {
-      p.positionals.push("--help");
+      p.help = true;
       continue;
     }
-    if (a.startsWith("-")) {
+    if (a === "-V" || a === "--version") {
+      p.version = true;
+      continue;
+    }
+    if (a.startsWith("-") && a !== "-") {
       let key = a;
       let inlineValue: string | undefined;
       const eq = a.indexOf("=");
@@ -70,21 +121,26 @@ function parseArgs(argv: string[]): Parsed {
         key = a.slice(0, eq);
         inlineValue = a.slice(eq + 1);
       }
-      if (!VALUE_FLAGS.has(key) && !BOOL_FLAGS.has(key)) {
+      const boolName = BOOL_FLAGS.get(key);
+      const valueName = VALUE_FLAGS.get(key);
+      if (!boolName && !valueName) {
         throw new UsageError(`unknown option: ${a}`);
       }
-      if (BOOL_FLAGS.has(key)) {
+      if (boolName) {
         if (inlineValue !== undefined) throw new UsageError(`option ${key} takes no value`);
-        if (key === "--json") p.json = true;
-        else if (key === "--force") p.force = true;
-        else if (key === "--no-rerank") p.noRerank = true;
-        else if (key === "--lex-only") p.lexOnly = true;
+        p.seen.add(boolName);
+        if (boolName === "json") p.json = true;
+        else if (boolName === "force") p.force = true;
+        else if (boolName === "no-rerank") p.noRerank = true;
+        else if (boolName === "lex-only") p.lexOnly = true;
         continue;
       }
       const value = inlineValue ?? argv[++i];
       if (value === undefined) throw new UsageError(`option ${key} needs a value`);
+      p.seen.add(valueName!);
       if (key === "-d" || key === "--db") p.db = value;
       else if (key === "--config") p.config = value;
+      else if (key === "--jobs") p.jobs = value;
       else if (key === "-n" || key === "--limit") {
         const n = Number(value);
         if (!Number.isInteger(n) || n < 1) throw new UsageError(`option -n needs a positive integer, got "${value}"`);
@@ -100,8 +156,19 @@ function parseArgs(argv: string[]): Parsed {
 
 export class UsageError extends Error {}
 
+/** Reject options the command does not use (rather than silently ignoring them). */
+function validateFlags(command: string, p: Parsed): void {
+  const allowed = COMMAND_FLAGS[command];
+  if (!allowed) return;
+  for (const name of p.seen) {
+    if (!allowed.includes(name)) {
+      throw new UsageError(`option --${name} is not valid for '${command}' (accepts: ${allowed.map((f) => `--${f}`).join(", ")})`);
+    }
+  }
+}
+
 async function openStore(p: Parsed): Promise<QmdStore> {
-  const cfg = loadRemoteConfig();
+  const cfg = loadRemoteConfig(p.jobs);
   return createStoreRemote({ dbPath: p.db, configPath: p.config, jobs: cfg.jobs });
 }
 
@@ -162,16 +229,30 @@ async function cmdEmbed(p: Parsed): Promise<number> {
   if (p.collections.length > 1) throw new UsageError("embed accepts at most one -c <col>");
   const store = await openStore(p);
   try {
-    let last: string | undefined;
+    // Progress goes to stderr; on a TTY it rewrites one line, in a pipe/log it
+    // is throttled to whole lines (no stray carriage returns in log files).
+    const isTty = process.stderr.isTTY === true;
+    const width = (process.stderr.columns ?? 80) - 1;
+    let wrote = false;
+    let lastPrint = 0;
     const r = await store.embed({
       collection: p.collections[0],
       force: p.force || undefined,
       onProgress: (info) => {
-        last = `\rEmbedding… ${info.chunksEmbedded}/${info.totalChunks} chunks` + (info.errors > 0 ? ` (${info.errors} errors)` : "");
-        process.stderr.write(last.length > 80 ? last.slice(0, 80) + "…" : last);
+        const text = `Embedding… ${info.chunksEmbedded}/${info.totalChunks} chunks` + (info.errors > 0 ? ` (${info.errors} errors)` : "");
+        if (isTty) {
+          const line = text.length > width ? text.slice(0, width - 1) + "…" : text;
+          process.stderr.write(`\r${line}`);
+          wrote = true;
+          return;
+        }
+        const now = Date.now();
+        if (now - lastPrint < 10_000 && info.chunksEmbedded !== info.totalChunks) return;
+        lastPrint = now;
+        process.stderr.write(`${text}\n`);
       },
     });
-    if (last) process.stderr.write("\n");
+    if (wrote) process.stderr.write("\n");
     if (p.json) {
       console.log(JSON.stringify(r, null, 2));
       return 0;
@@ -279,9 +360,16 @@ async function cmdCollections(p: Parsed): Promise<number> {
 }
 
 async function cmdDoctor(p: Parsed): Promise<number> {
-  const cfg = loadRemoteConfig();
+  const cfg = loadRemoteConfig(p.jobs);
   const jobs: RemoteJobs = cfg.jobs;
-  const backend = await createBackend(jobs);
+  // Probes must not retry: doctor is a diagnostic and is promised to be fast —
+  // a rate-limited or dead provider should be reported, not waited out.
+  const probeJobs: RemoteJobs = {
+    embed: { ...jobs.embed, maxRetries: 0 },
+    rerank: { ...jobs.rerank, maxRetries: 0 },
+    expand: { ...jobs.expand, maxRetries: 0 },
+  };
+  const backend = await createBackend(probeJobs);
   const lines: { job: string; provider: string; detail: string; ok: boolean; error?: string }[] = [];
 
   const probe = async (job: string, fn: () => Promise<unknown>): Promise<{ detail: string; ok: boolean; error?: string }> => {
@@ -301,6 +389,19 @@ async function cmdDoctor(p: Parsed): Promise<number> {
     if (job === "expand" && Array.isArray(out)) return `OK ${(out as unknown[]).length} variants, ${ms} ms`;
     return `OK ${ms} ms`;
   };
+  /**
+   * The expand probe must go through `generate()`, NOT `expandQuery()`:
+   * expansion degrades softly to the plain query on provider failure (qmd's
+   * own semantics), so `expandQuery` never throws and a dead provider would
+   * be reported green — the exact thing doctor exists to catch. `generate`
+   * hits the same endpoint and fails loudly; the variants are then parsed
+   * from its completion so the reported detail stays meaningful.
+   */
+  const probeExpand = async (): Promise<unknown> => {
+    const out = await backend.generate(EXPAND_PROMPT("doctor probe"), { maxTokens: 64, temperature: 0 });
+    if (!out || typeof out.text !== "string") throw new Error(`qmd-remote: expand (${jobs.expand.provider} ${jobs.expand.model}) returned no completion`);
+    return parseExpansion(out.text, "doctor probe", true);
+  };
 
   if (jobs.embed.provider === "local") lines.push({ job: "embed", provider: "local", detail: "local (no remote call)", ok: true });
   else lines.push({ job: "embed", provider: jobs.embed.provider, ...(await probe("embed", () => backend.embed("qmd-remote doctor probe"))) });
@@ -317,7 +418,7 @@ async function cmdDoctor(p: Parsed): Promise<number> {
       )),
     });
   if (jobs.expand.provider === "local") lines.push({ job: "expand", provider: "local", detail: "local (no remote call)", ok: true });
-  else lines.push({ job: "expand", provider: jobs.expand.provider, ...(await probe("expand", () => backend.expandQuery("doctor probe"))) });
+  else lines.push({ job: "expand", provider: jobs.expand.provider, ...(await probe("expand", probeExpand)) });
   await backend.dispose();
 
   // index line (local sqlite only; skipped when no index file yet)
@@ -347,22 +448,37 @@ async function cmdDoctor(p: Parsed): Promise<number> {
 async function cmdMcp(p: Parsed): Promise<number> {
   // MCP over stdio: stdout is the protocol channel from here on — no stdout
   // writes outside frames (console.error is fine).
-  const cfg = loadRemoteConfig();
+  const cfg = loadRemoteConfig(p.jobs);
   const store = await createStoreRemote({ dbPath: p.db, configPath: p.config, jobs: cfg.jobs });
   const gate = new InflightGate();
   const { serveStdio } = await import("@modelcontextprotocol/server/stdio");
   const handle = await serveStdio(() => createQmdRemoteMcpServer(store, { inflight: gate }));
   // Follow the parent's lifecycle: stdin EOF → the client is gone; wait for
   // in-flight work, then close store (sqlite + backend) and exit.
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     handle.close();
     await gate.waitForIdle(10_000);
     await store.close().catch((err) => console.error(`qmd-remote: store close on shutdown failed: ${err instanceof Error ? err.message : err}`));
-    process.exit(0);
+    // Not process.exit(): let the loop drain so any frame still in the stdout
+    // buffer is flushed. Nothing keeps the process alive once stdin is done
+    // and sqlite is closed.
+    process.exitCode = 0;
+    process.stdin.pause();
   };
-  process.stdin.once("close", () => {
-    shutdown().catch(() => process.exit(1));
-  });
+  const onDone = () => {
+    shutdown().catch((err) => {
+      console.error(`qmd-remote: shutdown failed: ${err instanceof Error ? err.message : err}`);
+      process.exitCode = 1;
+    });
+  };
+  // "end" fires when stdin is read to EOF, "close" when the handle goes away.
+  // Both are listened to: which one arrives depends on whether the transport
+  // keeps stdin in flowing mode.
+  process.stdin.once("end", onDone);
+  process.stdin.once("close", onDone);
   if (process.stdin.readableEnded) {
     await shutdown();
   }
@@ -385,12 +501,17 @@ export async function main(argv: string[]): Promise<number> {
     }
     throw err;
   }
-  if (parsed.positionals.includes("--help")) {
+  if (parsed.help) {
     console.log(USAGE);
+    return 0;
+  }
+  if (parsed.version) {
+    console.log(packageVersion());
     return 0;
   }
   const [command, ...rest] = parsed.positionals;
   try {
+    if (command !== undefined) validateFlags(command, parsed);
     switch (command) {
       case "update":
         return await cmdUpdate(parsed);
@@ -422,13 +543,12 @@ export async function main(argv: string[]): Promise<number> {
     }
     // D7: provider/config/store errors fail loudly — the message already
     // names job/provider/URL (adapters) or the config path (config-file).
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = redactSecrets(err instanceof Error ? err.message : String(err));
     console.error(msg.startsWith("qmd-remote:") || msg.startsWith("config:") ? msg : `qmd-remote: ${msg}`);
     return 1;
   }
 }
 
-/* eslint-disable @typescript-eslint/no-floating-promises */
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 if (isMain) {
   main(process.argv.slice(2)).then(
@@ -436,7 +556,7 @@ if (isMain) {
       process.exitCode = code;
     },
     (err) => {
-      console.error(`qmd-remote: ${err instanceof Error ? (err.stack ?? err.message) : err}`);
+      console.error(redactSecrets(`qmd-remote: ${err instanceof Error ? (err.stack ?? err.message) : err}`));
       process.exitCode = 1;
     },
   );

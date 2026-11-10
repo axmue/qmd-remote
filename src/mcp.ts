@@ -17,9 +17,7 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES, type QMDStore } from "@tobilu/qmd";
 import { z } from "zod";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { packageVersion } from "./version.js";
 
 // =============================================================================
 // Helpers (copied from dist/mcp/server.js:26-48)
@@ -46,16 +44,6 @@ function formatSearchSummary(results: SummaryHit[], query: string): string {
     lines.push(`${r.docid} ${Math.round(r.score * 100)}% ${r.file} - ${r.title}`);
   }
   return lines.join("\n");
-}
-
-function getPackageVersion(): string {
-  try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "../package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
-    return pkg.version ?? "unknown";
-  } catch {
-    return "unknown";
-  }
 }
 
 // =============================================================================
@@ -164,7 +152,7 @@ export interface QmdRemoteMcpServerOptions {
 export async function createQmdRemoteMcpServer(store: QMDStore, options: QmdRemoteMcpServerOptions = {}): Promise<McpServer> {
   const inflight = options.inflight ?? new InflightGate();
   const track = inflight.track.bind(inflight);
-  const server = new McpServer({ name: "qmd-remote", version: getPackageVersion() }, {
+  const server = new McpServer({ name: "qmd-remote", version: packageVersion() }, {
     instructions: await buildInstructions(store),
   });
 

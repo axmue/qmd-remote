@@ -223,3 +223,57 @@ test("embed against a 401 provider → exit 1, provider error surfaces (D7, no l
     await mock.close();
   }
 });
+
+test("--version prints the package version", async () => {
+  const f = makeFixture(ALL_LOCAL);
+  const r = await runCli(f, ["--version"]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out.trim(), /^\d+\.\d+\.\d+/);
+});
+
+test("usage: a flag the command does not use is rejected, not ignored", async () => {
+  const f = makeFixture(ALL_LOCAL);
+  const r = await runCli(f, ["status", "--force"]);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /--force is not valid for 'status'/);
+});
+
+test("doctor: a dead EXPAND provider is reported red (expandQuery's soft fallback must not hide it)", async () => {
+  // Only the expand job is remote, and it points at a closed port: the search
+  // path degrades softly by design (qmd's own semantics), so this is exactly
+  // the failure doctor exists to surface.
+  const f = makeFixture({
+    embed: { provider: "local" },
+    rerank: { provider: "local" },
+    expand: { provider: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", model: "dead-model", timeoutMs: 2000 },
+  });
+  const r = await runCli(f, ["doctor"]);
+  assert.equal(r.code, 1, "a dead provider must exit 1");
+  assert.match(r.out + r.err, /expand.*dead-model/s);
+  assert.doesNotMatch(r.out, /expand\s+openai-compat\s+OK/, "must not be reported green");
+});
+
+test("--jobs <path> selects the models config (overriding $QMD_REMOTE_CONFIG)", async () => {
+  const mock = await mockProvider(false);
+  const f = makeFixture(ALL_LOCAL); // $QMD_REMOTE_CONFIG → all-local
+  const alt = join(f.root, "remote-jobs.json");
+  writeFileSync(alt, JSON.stringify({ jobs: REMOTE_JOBS(mock.url) }));
+  try {
+    const r = await runCli(f, ["doctor", "--jobs", alt]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, new RegExp(`config\\s+${alt.replace(/[/\\]/g, "\\$&")}`));
+    assert.match(r.out, /embed\s+openai-compat\s+OK \d+ dims/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("query: `--` ends option parsing so search text may start with a dash", async () => {
+  const f = makeFixture(ALL_LOCAL);
+  let r = await runCli(f, ["update"]);
+  assert.equal(r.code, 0, r.err);
+  r = await runCli(f, ["query", "--lex-only", "--", "-banana"]);
+  assert.equal(r.code, 0, r.err);
+  r = await runCli(f, ["query", "--lex-only", "-banana"]);
+  assert.equal(r.code, 2, "without `--` a leading dash is still an unknown option");
+});

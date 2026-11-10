@@ -25,10 +25,17 @@ export interface RemoteJobConfig {
   baseUrl?: string;
   /** provider model name (required for non-local jobs). */
   model?: string;
-  /** API key (openai-compat; ignored for ollama/local). */
+  /**
+   * API key (openai-compat; ignored for local). Three forms:
+   * `"sk-…"` literal, `"env:VAR_NAME"` (read from the environment at load
+   * time), `"file:~/.secrets/key"` (first line of a file). The indirections
+   * keep provider keys out of the config file — see src/backend/secrets.ts.
+   */
   apiKey?: string;
   /** per-request wall-clock cap in ms (default 60000). */
   timeoutMs?: number;
+  /** retries for retryable failures (HTTP 429/5xx, network errors); default 2, max 10, 0 disables. */
+  maxRetries?: number;
   /** extra request headers for openai-compat (e.g. OpenRouter's "Referer" / "X-Title"). */
   headers?: Record<string, string>;
   /** embed job only: text prefix applied to QUERY-side embeddings (the single `embed(..., { isQuery: true })` call). Two-tower embed models (Jina v3) distinguish query/passage via text prefixes. Absent = no prefix. */

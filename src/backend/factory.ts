@@ -72,27 +72,41 @@ function makeAdapter(jobName: keyof RemoteJobs, job: RemoteJobConfig): RemoteAda
 }
 
 /**
- * Import LlamaCpp from the installed qmd package. The package exports map
- * has no `require`/`main` condition (ESM-only "."), so bare-specifier
- * resolution fails for CJS require.resolve — instead we walk up from this
- * file to the node_modules copy and import dist/llm.js by file URL (the
- * exports map blocks subpath imports; the exact 2.8.3 pin makes the dist
- * path as durable as any textual reference).
+ * Import LlamaCpp from the installed qmd package. qmd's exports map blocks
+ * subpath imports and has no `require` condition, so the class must be loaded
+ * from its file path. Resolution order:
+ *   1. `import.meta.resolve("@tobilu/qmd")` → the real entry point, then
+ *      `../dist/llm.js` next to it. This is the only form that works on
+ *      pnpm's symlinked store and Yarn PnP.
+ *   2. walk up from this file looking for `node_modules/@tobilu/qmd` (classic
+ *      hoisted npm trees, and anything where (1) is unavailable).
+ * The exact 2.8.3 pin makes the dist path as durable as any textual reference.
  */
 async function importLlamaCppCtor(): Promise<QmdLlamaCppCtor> {
+  const candidates: string[] = [];
+  try {
+    const entry = fileURLToPath(import.meta.resolve("@tobilu/qmd"));
+    candidates.push(join(dirname(entry), "llm.js"), join(dirname(entry), "dist", "llm.js"));
+  } catch {
+    /* no resolver (bundled/older runtime) — fall through to the walk */
+  }
   let dir = dirname(fileURLToPath(import.meta.url));
   for (;;) {
-    const candidate = join(dir, "node_modules", "@tobilu/qmd", "dist", "llm.js");
-    if (existsSync(candidate)) {
-      const mod = (await import(pathToFileURL(candidate).href)) as { LlamaCpp?: QmdLlamaCppCtor };
-      if (!mod.LlamaCpp) throw new Error(`qmd-remote: ${candidate} exports no LlamaCpp — package layout changed? (pinned 2.8.3)`);
-      return mod.LlamaCpp;
-    }
+    candidates.push(join(dir, "node_modules", "@tobilu/qmd", "dist", "llm.js"));
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error("qmd-remote: cannot locate the installed @tobilu/qmd package (a local qmd job is configured) — is node_modules present?");
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    const mod = (await import(pathToFileURL(candidate).href)) as { LlamaCpp?: QmdLlamaCppCtor };
+    if (!mod.LlamaCpp) throw new Error(`qmd-remote: ${candidate} exports no LlamaCpp — package layout changed? (pinned 2.8.3)`);
+    return mod.LlamaCpp;
+  }
+  throw new Error(
+    "qmd-remote: cannot locate the installed @tobilu/qmd package (a local qmd job is configured) — " +
+      `is it installed? (looked for dist/llm.js in ${candidates.length} locations)`,
+  );
 }
 
 /**

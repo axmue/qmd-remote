@@ -292,3 +292,52 @@ test("factory: unknown provider rejects loudly (normalization catches it first)"
   assert.equal(allLocal.embedModelName, "fake:embed-model"); // all-local → everything routed to (fake) LlamaCpp
   await allLocal.dispose();
 });
+
+// =============================================================================
+// Partial batch responses (review §2.4): qmd handles per-item nulls (it records
+// the chunk as failed and retries it), so a short/holey batch must NOT throw
+// away the 31 good embeddings that came with it.
+// =============================================================================
+
+test("openai-compat: short batch response → null per missing position, not a throw", async () => {
+  const mock = await startMockServer({
+    "/v1/embeddings": () => ({ data: [{ embedding: [1, 1], index: 0 }, { embedding: [3, 3], index: 2 }] }),
+  });
+  try {
+    const jobs: RemoteJobs = { ...JOBS, embed: { provider: "openai-compat", baseUrl: `${mock.url}/v1`, model: "m" } };
+    const backend = await createBackend(jobs);
+    const res = await backend.embedBatch(["a", "b", "c"]);
+    assert.equal(res.length, 3);
+    assert.deepEqual(res[0]!.embedding, [1, 1]);
+    assert.equal(res[1], null, "the missing position is null, the others survive");
+    assert.deepEqual(res[2]!.embedding, [3, 3]);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("ollama: short batch response → null per missing position", async () => {
+  const mock = await startMockServer({
+    "/api/embed": () => ({ embeddings: [[1, 1]] }),
+  });
+  try {
+    const jobs: RemoteJobs = { ...JOBS, embed: { provider: "ollama", baseUrl: mock.url, model: "nomic" } };
+    const backend = await createBackend(jobs);
+    const res = await backend.embedBatch(["a", "b"]);
+    assert.deepEqual(res[0]!.embedding, [1, 1]);
+    assert.equal(res[1], null);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("an empty batch response is still a hard error (nothing came back at all)", async () => {
+  const mock = await startMockServer({ "/v1/embeddings": () => ({ data: [] }) });
+  try {
+    const jobs: RemoteJobs = { ...JOBS, embed: { provider: "openai-compat", baseUrl: `${mock.url}/v1`, model: "m" } };
+    const backend = await createBackend(jobs);
+    await assert.rejects(() => backend.embedBatch(["a"]), /returned no embeddings for 1 inputs/);
+  } finally {
+    await mock.close();
+  }
+});

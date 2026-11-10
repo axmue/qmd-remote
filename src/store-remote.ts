@@ -16,7 +16,7 @@
  */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createStore, type QMDStore } from "@tobilu/qmd";
 import { createBackend, type QmdLlamaCppCtor } from "./backend/factory.js";
 import { loadRemoteConfig } from "./config-file.js";
@@ -28,25 +28,59 @@ interface InternalWithLlm {
   llm?: unknown;
 }
 
+/** qmd's own home resolution (dist/paths.js qmdHomedir): HOME/USERPROFILE before os.homedir(). */
+function qmdHomedir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.HOME || env.USERPROFILE || homedir() || "/tmp";
+}
+
+/**
+ * Project-local qmd index, mirroring dist/collections.js findLocalConfigPath +
+ * getLocalDbPath (pinned 2.8.3): walking up from `startDir`, a `.qmd/index.yaml`
+ * or `.qmd/index.yml` makes that directory the index root, with the sqlite file
+ * next to it. Stock `qmd` prefers this over the global locations, so we must
+ * too — otherwise a user inside such a project silently queries a different
+ * (global, probably empty) index than the one `qmd` built.
+ */
+export function findLocalQmdIndex(startDir: string = process.cwd()): { configPath: string; dbPath: string } | undefined {
+  let dir = resolve(startDir);
+  for (;;) {
+    for (const name of ["index.yaml", "index.yml"]) {
+      const configPath = join(dir, ".qmd", name);
+      if (existsSync(configPath)) return { configPath, dbPath: join(dir, ".qmd", "index.sqlite") };
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
 /**
  * Stock qmd's default index DB path — mirrors dist/store.js getDefaultDbPath
- * (pinned 2.8.3): INDEX_PATH env override, else $XDG_CACHE_HOME|~/.cache/qmd/index.sqlite.
+ * (pinned 2.8.3): INDEX_PATH env override, else a project-local
+ * `.qmd/index.sqlite` if one is found, else $XDG_CACHE_HOME|~/.cache/qmd/index.sqlite.
  * (qmd's own export throws outside its "production mode" flag, so we mirror
- * the two resolution rules instead of calling it.)
+ * the resolution rules instead of calling it.)
  */
-export function defaultQmdDbPath(env: NodeJS.ProcessEnv = process.env): string {
+export function defaultQmdDbPath(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): string {
   if (env.INDEX_PATH) return env.INDEX_PATH;
-  const cacheDir = env.XDG_CACHE_HOME || resolve(homedir(), ".cache");
+  if (!env.QMD_CONFIG_DIR) {
+    const local = findLocalQmdIndex(cwd);
+    if (local) return local.dbPath;
+  }
+  const cacheDir = env.XDG_CACHE_HOME || resolve(qmdHomedir(env), ".cache");
   return join(cacheDir, "qmd", "index.sqlite");
 }
 
 /**
  * Stock qmd's default config yaml path — mirrors dist/collections.js
- * (pinned 2.8.3): $QMD_CONFIG_DIR|($XDG_CONFIG_HOME|~/.config)/qmd, file index.yml.
+ * (pinned 2.8.3): $QMD_CONFIG_DIR, else a project-local `.qmd/index.y(a)ml`,
+ * else ($XDG_CONFIG_HOME|~/.config)/qmd/index.yml.
  */
-export function defaultQmdConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+export function defaultQmdConfigPath(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): string {
   if (env.QMD_CONFIG_DIR) return join(env.QMD_CONFIG_DIR, "index.yml");
-  const configHome = env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  const local = findLocalQmdIndex(cwd);
+  if (local) return local.configPath;
+  const configHome = env.XDG_CONFIG_HOME || join(qmdHomedir(env), ".config");
   return join(configHome, "qmd", "index.yml");
 }
 

@@ -12,6 +12,7 @@ import type { SearchOptions } from "@tobilu/qmd";
 import { loadRemoteConfig } from "./config-file.js";
 import { createBackend } from "./backend/factory.js";
 import { createStoreRemote, defaultQmdDbPath, defaultQmdConfigPath } from "./store-remote.js";
+import { createQmdRemoteMcpServer, InflightGate } from "./mcp.js";
 import type { QmdStore } from "./store-remote.js";
 import type { RemoteJobs } from "./backend/types.js";
 
@@ -26,6 +27,7 @@ Commands:
               [--no-rerank] [--lex-only]
   status      [index counts; offline]
   doctor      [config check + live probe of every remote job]
+  mcp         [serve the MCP server over stdio — for agent configs]
   collections list | add <name> <path> [--pattern <glob>] | remove <name>
 
 Options:
@@ -342,6 +344,31 @@ async function cmdDoctor(p: Parsed): Promise<number> {
   return lines.some((l) => !l.ok) ? 1 : 0;
 }
 
+async function cmdMcp(p: Parsed): Promise<number> {
+  // MCP over stdio: stdout is the protocol channel from here on — no stdout
+  // writes outside frames (console.error is fine).
+  const cfg = loadRemoteConfig();
+  const store = await createStoreRemote({ dbPath: p.db, configPath: p.config, jobs: cfg.jobs });
+  const gate = new InflightGate();
+  const { serveStdio } = await import("@modelcontextprotocol/server/stdio");
+  const handle = await serveStdio(() => createQmdRemoteMcpServer(store, { inflight: gate }));
+  // Follow the parent's lifecycle: stdin EOF → the client is gone; wait for
+  // in-flight work, then close store (sqlite + backend) and exit.
+  const shutdown = async () => {
+    handle.close();
+    await gate.waitForIdle(10_000);
+    await store.close().catch((err) => console.error(`qmd-remote: store close on shutdown failed: ${err instanceof Error ? err.message : err}`));
+    process.exit(0);
+  };
+  process.stdin.once("close", () => {
+    shutdown().catch(() => process.exit(1));
+  });
+  if (process.stdin.readableEnded) {
+    await shutdown();
+  }
+  return 0; // unreachable while serving; keeps main()'s type honest
+}
+
 // ---------------------------------------------------------------------------
 // entry
 // ---------------------------------------------------------------------------
@@ -376,6 +403,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdStatus(parsed);
       case "doctor":
         return await cmdDoctor(parsed);
+      case "mcp":
+        return await cmdMcp(parsed);
       case "collections":
         parsed.positionals = rest;
         return await cmdCollections(parsed);

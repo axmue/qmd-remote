@@ -21,6 +21,8 @@ export {
 } from "./backend/adapters/ollama.js";
 export { createStoreRemote, defaultQmdDbPath, defaultQmdConfigPath } from "./store-remote.js";
 export type { CreateStoreRemoteOptions, QmdStore } from "./store-remote.js";
+export { createQmdRemoteMcpServer, InflightGate } from "./mcp.js";
+export type { QmdRemoteMcpServerOptions } from "./mcp.js";
 export { loadRemoteConfig, defaultConfigPath, QMD_REMOTE_CONFIG_ENV } from "./config-file.js";
 export type { RemoteConfig } from "./config-file.js";
 // Re-export qmd's public surface (one physical qmd copy for the consumer).

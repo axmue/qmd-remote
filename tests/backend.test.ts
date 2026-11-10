@@ -5,115 +5,17 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
-import type { QmdLlmBackend, RemoteJobs } from "../src/backend/types.js";
+import type { RemoteJobs } from "../src/backend/types.js";
 import { createBackend } from "../src/backend/factory.js";
 import { REMOTE_JOB_NAMES } from "../src/backend/config.js";
-
-// =============================================================================
-// Mock HTTP server (loopback)
-// =============================================================================
-
-interface RouteResult {
-  /** non-2xx status to respond with (200 when absent). */
-  _status?: number;
-  [key: string]: unknown;
-}
-type RouteFn = (body: Record<string, unknown>) => RouteResult;
-
-async function startMockServer(routes: Record<string, RouteFn>) {
-  const hits: Record<string, Record<string, unknown>[]> = {};
-  const server: Server = createServer((req, res) => {
-    let raw = "";
-    req.on("data", (c) => (raw += c));
-    req.on("end", () => {
-      const route = routes[req.url ?? ""];
-      if (!route) {
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: `no mock route for ${req.url}` }));
-        return;
-      }
-      let body: Record<string, unknown> = {};
-      try {
-        body = JSON.parse(raw || "{}");
-      } catch {
-        /* keep {} */
-      }
-      hits[req.url ?? ""] ??= [];
-      hits[req.url ?? ""].push(body);
-      const out = route(body);
-      const status = out._status ?? 200;
-      const { _status: _drop, ...payload } = out;
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify(payload));
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as import("node:net").AddressInfo;
-  return {
-    url: `http://127.0.0.1:${port}`,
-    hits,
-    close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
-  };
-}
+import { startMockServer } from "./helpers/mock-server.js";
+import { FakeLlamaCpp } from "./helpers/fake-llamacpp.js";
 
 const JOBS: RemoteJobs = {
   embed: { provider: "local" },
   rerank: { provider: "local" },
   expand: { provider: "local" },
 };
-
-/** Fake LlamaCpp for local-job routing tests — records calls, never loads models. */
-class FakeLlamaCpp implements QmdLlmBackend {
-  /** instances the factory constructs, so tests can inspect what actually ran. */
-  static instances: FakeLlamaCpp[] = [];
-  readonly embedModelName = "fake:embed-model";
-  readonly generateModelName = "fake:generate-model";
-  readonly rerankModelName = "fake:rerank-model";
-  calls: string[] = [];
-  constructor(readonly ctorConfig?: Record<string, unknown>) {
-    FakeLlamaCpp.instances.push(this);
-  }
-  async embed(text: string) {
-    this.calls.push("embed");
-    return { embedding: [1, 1, 1], model: this.embedModelName };
-  }
-  async embedBatch(texts: string[]) {
-    this.calls.push("embedBatch");
-    return texts.map(() => ({ embedding: [1, 1, 1], model: this.embedModelName }));
-  }
-  async generate(prompt: string) {
-    this.calls.push("generate");
-    return { text: prompt, model: this.generateModelName, done: true };
-  }
-  async expandQuery(query: string) {
-    this.calls.push("expandQuery");
-    return [{ type: "lex" as const, text: query }];
-  }
-  async rerank(_query: string, documents: { file: string }[]) {
-    this.calls.push("rerank");
-    return { results: documents.map((d, i) => ({ file: d.file, score: 1, index: i })), model: this.rerankModelName };
-  }
-  async modelExists(uri: string) {
-    return { name: uri, exists: true };
-  }
-  async tokenize(text: string) {
-    this.calls.push("tokenize");
-    return [42];
-  }
-  async countTokens(text: string) {
-    return 1;
-  }
-  async detokenize() {
-    return "fake";
-  }
-  async getDeviceInfo() {
-    return { gpu: "fake-gpu", gpuOffloading: true, gpuDevices: ["fake-gpu"], cpuCores: 4 };
-  }
-  async dispose() {
-    this.calls.push("dispose");
-  }
-}
 
 // =============================================================================
 // openai-compat adapter

@@ -40,10 +40,20 @@ Requirements: **Node ≥ 22**.
 
 ## Install
 
-```sh
-npm i -g qmd-remote      # CLI + MCP server
-npm i qmd-remote         # as a library
-```
+> **Not on npm yet** (first release pending). For now, install from git:
+>
+> ```sh
+> git clone https://github.com/axmue/qmd-remote.git && cd qmd-remote
+> npm install && npm run build
+> npm link            # puts the `qmd-remote` binary on PATH
+> ```
+>
+> Once published, it becomes:
+>
+> ```sh
+> npm i -g qmd-remote      # CLI + MCP server
+> npm i qmd-remote         # as a library
+> ```
 
 ## Quick start
 

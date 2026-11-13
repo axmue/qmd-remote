@@ -1,14 +1,20 @@
 # qmd-remote
 
-**[qmd](https://www.npmjs.com/package/@tobilu/qmd)'s indexer, chunker and hybrid
-search — with your choice of embed / rerank / query-expansion models.**
+**A small adapter that lets [qmd](https://www.npmjs.com/package/@tobilu/qmd) run
+its embed / rerank / query-expansion jobs on remote endpoints.**
 
-qmd runs its three model jobs on local GGUF models via node-llama-cpp. On a
-GPU-less box that is slow, and on a small box it is impossible. `qmd-remote`
-points any of those jobs at an OpenAI-compatible endpoint (OpenRouter, Jina,
-vLLM, LM Studio, …) or a local Ollama server, per job, and keeps everything else
-— the SQLite index, the chunker, BM25 + vector fusion, reranking, the MCP tool
-surface — exactly as qmd ships it.
+First, credit where it's due: **[qmd](https://www.npmjs.com/package/@tobilu/qmd)
+is the real work here.** The indexer, the chunker, hybrid BM25 + vector search,
+the reranking, the MCP tool surface — that's all qmd, and it's genuinely great.
+We're simply thankful it exists.
+
+Our part is tiny. We had one humble itch: qmd runs its three model jobs on local
+GGUF models via node-llama-cpp, which is slow on a GPU-less box and impractical
+on a small one. So `qmd-remote` does just one modest thing — it points any of
+those jobs at an OpenAI-compatible endpoint (OpenRouter, Jina, vLLM, LM Studio,
+…) or a local Ollama server, per job — and otherwise stays out of qmd's way: the
+SQLite index, the chunker, the search, the tools all remain exactly as qmd ships
+them. A thin seam around a great tool, nothing more.
 
 - **Same index as stock qmd** (`~/.config/qmd/index.yml` + `~/.cache/qmd/index.sqlite`,
   or a project-local `.qmd/`), so existing qmd users switch models without
@@ -18,8 +24,10 @@ surface — exactly as qmd ships it.
 - **No GGUF downloads** when every job is remote.
 - **Three doors**: a CLI, an MCP server for agents, and an SDK.
 
-> Unofficial. Not affiliated with tobit/qmd. Depends on stock, unmodified
-> `@tobilu/qmd`; the backend adapters are original code (MIT).
+> Unofficial and unaffiliated — just a grateful add-on. All credit for the
+> search engine belongs to qmd (`@tobilu/qmd`); this package only contributes
+> the remote backend adapters (MIT). If anything here is useful, it's because
+> qmd made it easy.
 
 > **Privacy:** remote jobs send your content to a third party. Embedding sends
 > every indexed chunk, reranking sends candidate document text (up to 8 000
@@ -137,6 +145,8 @@ qmd-remote query <text> [-c <col>] [-n <n>]
 qmd-remote status                                      index counts (offline)
 qmd-remote doctor                                      config + live probe of every remote job
 qmd-remote mcp                                         MCP server over stdio (for agents)
+qmd-remote mcp --http --port <n> [--host <addr>]       MCP server over Streamable HTTP
+               [--allowed-host <h>]... [--token <ref>]
 qmd-remote collections list | add <name> <path> [--pattern <glob>] | remove <name>
 
   -d, --db <path>      index.sqlite    (default: stock qmd location, or ./.qmd/index.sqlite)
@@ -197,6 +207,37 @@ jobs are remote.
 The server exposes the content of your indexed collections to the agent
 (including file reads within those collections) — scope it with collections you
 are willing to share.
+
+### Over the network (Streamable HTTP)
+
+stdio only reaches a child process on the same machine. To reach a collection
+from another host, serve it over **Streamable HTTP** — built in, no bridge:
+
+```sh
+qmd-remote mcp --http --port 8771 \
+  --host 100.x.y.z \                 # bind address; a tailnet IP/name to expose (default 127.0.0.1)
+  --db   /srv/vci/.qmd/index.sqlite \
+  --config /srv/vci/.qmd/index.yml \
+  --jobs /srv/vci/qmd-remote.json \
+  --token env:QMD_HTTP_TOKEN        # optional bearer (literal, env:VAR, or file:/path)
+```
+
+Endpoints: `POST /mcp` (sessionless JSON) and `GET /health`. A `Host`-header
+allowlist (DNS-rebinding guard) runs first — the bind host is allowed by
+default; add more with repeatable `--allowed-host`. The bearer `--token` is
+optional; **without it, anyone who can reach the port can query the index**, so
+bind to a trusted network. The Host guard is not authentication.
+
+Run one process per collection, each on its own port (independent index + jobs):
+
+```sh
+qmd-remote mcp --http --port 8771 --db /srv/vci/.qmd/index.sqlite --config /srv/vci/.qmd/index.yml --jobs /srv/vci/qmd-remote.json
+qmd-remote mcp --http --port 8772 --db /srv/agv/.qmd/index.sqlite --config /srv/agv/.qmd/index.yml --jobs /srv/agv/qmd-remote.json
+```
+
+An HTTP MCP client then connects to `http://<host>:8771/mcp` (vci) and
+`http://<host>:8772/mcp` (agv). Stop with Ctrl-C (SIGINT) — the handler, HTTP
+server and store close cleanly.
 
 ## SDK
 

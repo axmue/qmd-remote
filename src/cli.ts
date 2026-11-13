@@ -13,8 +13,9 @@ import { loadRemoteConfig } from "./config-file.js";
 import { createBackend } from "./backend/factory.js";
 import { createStoreRemote, defaultQmdDbPath, defaultQmdConfigPath } from "./store-remote.js";
 import { createQmdRemoteMcpServer, InflightGate } from "./mcp.js";
+import { startQmdRemoteMcpHttpServer } from "./mcp-http.js";
 import { EXPAND_PROMPT, parseExpansion } from "./backend/adapters/shared.js";
-import { redactSecrets } from "./backend/secrets.js";
+import { redactSecrets, resolveSecret } from "./backend/secrets.js";
 import { packageVersion } from "./version.js";
 import type { QmdStore } from "./store-remote.js";
 import type { RemoteJobs } from "./backend/types.js";
@@ -30,13 +31,19 @@ Commands:
               [--no-rerank] [--lex-only]
   status      [index counts; offline]
   doctor      [config check + live probe of every remote job]
-  mcp         [serve the MCP server over stdio — for agent configs]
+  mcp         [serve over stdio (default) — for agent configs]
+              [--http --port <n> [--host <addr>] [--allowed-host <h>]... [--token <ref>]]
   collections list | add <name> <path> [--pattern <glob>] | remove <name>
 
 Options:
   -d, --db <path>     index.sqlite (default: stock qmd location, or .qmd/index.sqlite)
       --config <path> index.yml   (default: stock qmd location, or .qmd/index.yml)
       --jobs <path>   models config JSON (default: $QMD_REMOTE_CONFIG or ~/.config/qmd-remote/config.json)
+      --http          serve MCP over Streamable HTTP instead of stdio (needs --port)
+      --host <addr>   HTTP bind address (default 127.0.0.1; set a tailnet IP/name to expose)
+      --port <n>      HTTP port
+      --allowed-host <h>  repeatable Host-header allowlist entry (DNS-rebind guard)
+      --token <ref>   optional HTTP bearer token: literal, env:VAR, or file:/path
       --json          machine-readable output (status, collections, doctor, query)
   -h, --help          usage
   -V, --version       print the version
@@ -51,6 +58,12 @@ interface Parsed {
   config?: string;
   /** path to the models (jobs) config file — --jobs, overrides $QMD_REMOTE_CONFIG. */
   jobs?: string;
+  /** HTTP MCP transport (mcp command). */
+  http: boolean;
+  host?: string;
+  port?: number;
+  allowedHosts: string[];
+  token?: string;
   json: boolean;
   force: boolean;
   noRerank: boolean;
@@ -68,6 +81,10 @@ const VALUE_FLAGS = new Map<string, string>([
   ["--db", "db"],
   ["--config", "config"],
   ["--jobs", "jobs"],
+  ["--host", "host"],
+  ["--port", "port"],
+  ["--allowed-host", "allowed-host"],
+  ["--token", "token"],
   ["-n", "limit"],
   ["--limit", "limit"],
   ["-c", "collection"],
@@ -76,6 +93,7 @@ const VALUE_FLAGS = new Map<string, string>([
 ]);
 const BOOL_FLAGS = new Map<string, string>([
   ["--json", "json"],
+  ["--http", "http"],
   ["--force", "force"],
   ["--no-rerank", "no-rerank"],
   ["--lex-only", "lex-only"],
@@ -92,12 +110,12 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   query: ["db", "config", "jobs", "json", "collection", "limit", "no-rerank", "lex-only"],
   status: ["db", "config", "jobs", "json"],
   doctor: ["db", "config", "jobs", "json"],
-  mcp: ["db", "config", "jobs"],
+  mcp: ["db", "config", "jobs", "http", "host", "port", "allowed-host", "token"],
   collections: ["db", "config", "jobs", "json", "pattern"],
 };
 
 function parseArgs(argv: string[]): Parsed {
-  const p: Parsed = { positionals: [], collections: [], json: false, force: false, noRerank: false, lexOnly: false, help: false, version: false, seen: new Set() };
+  const p: Parsed = { positionals: [], collections: [], http: false, allowedHosts: [], json: false, force: false, noRerank: false, lexOnly: false, help: false, version: false, seen: new Set() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--") {
@@ -130,6 +148,7 @@ function parseArgs(argv: string[]): Parsed {
         if (inlineValue !== undefined) throw new UsageError(`option ${key} takes no value`);
         p.seen.add(boolName);
         if (boolName === "json") p.json = true;
+        else if (boolName === "http") p.http = true;
         else if (boolName === "force") p.force = true;
         else if (boolName === "no-rerank") p.noRerank = true;
         else if (boolName === "lex-only") p.lexOnly = true;
@@ -141,6 +160,13 @@ function parseArgs(argv: string[]): Parsed {
       if (key === "-d" || key === "--db") p.db = value;
       else if (key === "--config") p.config = value;
       else if (key === "--jobs") p.jobs = value;
+      else if (key === "--host") p.host = value;
+      else if (key === "--port") {
+        const n = Number(value);
+        if (!Number.isInteger(n) || n < 0 || n > 65535) throw new UsageError(`option --port needs a 0–65535 integer, got "${value}"`);
+        p.port = n;
+      } else if (key === "--allowed-host") p.allowedHosts.push(value);
+      else if (key === "--token") p.token = value;
       else if (key === "-n" || key === "--limit") {
         const n = Number(value);
         if (!Number.isInteger(n) || n < 1) throw new UsageError(`option -n needs a positive integer, got "${value}"`);
@@ -446,9 +472,14 @@ async function cmdDoctor(p: Parsed): Promise<number> {
 }
 
 async function cmdMcp(p: Parsed): Promise<number> {
+  const cfg = loadRemoteConfig(p.jobs);
+  if (p.http) return cmdMcpHttp(p, cfg.jobs);
+  // HTTP-only flags without --http would be silently ignored — reject instead.
+  for (const name of ["host", "port", "allowed-host", "token"]) {
+    if (p.seen.has(name)) throw new UsageError(`option --${name} needs --http`);
+  }
   // MCP over stdio: stdout is the protocol channel from here on — no stdout
   // writes outside frames (console.error is fine).
-  const cfg = loadRemoteConfig(p.jobs);
   const store = await createStoreRemote({ dbPath: p.db, configPath: p.config, jobs: cfg.jobs });
   const gate = new InflightGate();
   const { serveStdio } = await import("@modelcontextprotocol/server/stdio");
@@ -483,6 +514,39 @@ async function cmdMcp(p: Parsed): Promise<number> {
     await shutdown();
   }
   return 0; // unreachable while serving; keeps main()'s type honest
+}
+
+/**
+ * MCP over Streamable HTTP. Unlike stdio, stdout is free, so the startup line
+ * and shutdown breadcrumbs go to stderr. Runs until SIGINT/SIGTERM, then closes
+ * the handler, the HTTP server and the store.
+ */
+async function cmdMcpHttp(p: Parsed, jobs: unknown): Promise<number> {
+  if (p.port === undefined) throw new UsageError("mcp --http needs a --port <n>");
+  const token = p.token !== undefined ? resolveSecret(p.token, "--token") : undefined;
+  const handle = await startQmdRemoteMcpHttpServer({
+    dbPath: p.db,
+    configPath: p.config,
+    jobs,
+    host: p.host,
+    port: p.port,
+    allowedHosts: p.allowedHosts,
+    token,
+  });
+  let stopping = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    console.error(`qmd-remote: shutting down (${signal})…`);
+    await handle.stop().catch((err) => console.error(`qmd-remote: shutdown failed: ${err instanceof Error ? err.message : err}`));
+    process.exitCode = 0;
+  };
+  await new Promise<void>((resolve) => {
+    process.once("SIGINT", () => void shutdown("SIGINT").then(resolve));
+    process.once("SIGTERM", () => void shutdown("SIGTERM").then(resolve));
+    handle.httpServer.once("close", () => resolve());
+  });
+  return 0;
 }
 
 // ---------------------------------------------------------------------------

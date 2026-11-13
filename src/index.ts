@@ -25,6 +25,8 @@ export { packageVersion } from "./version.js";
 export type { CreateStoreRemoteOptions, QmdStore } from "./store-remote.js";
 export { createQmdRemoteMcpServer, InflightGate } from "./mcp.js";
 export type { QmdRemoteMcpServerOptions } from "./mcp.js";
+export { startQmdRemoteMcpHttpServer } from "./mcp-http.js";
+export type { StartHttpServerOptions, HttpServerHandle } from "./mcp-http.js";
 export { loadRemoteConfig, defaultConfigPath, QMD_REMOTE_CONFIG_ENV } from "./config-file.js";
 export type { RemoteConfig } from "./config-file.js";
 // Re-export qmd's public surface (one physical qmd copy for the consumer).

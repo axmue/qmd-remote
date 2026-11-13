@@ -77,6 +77,16 @@ auth.json key resolution, bridge env mechanics, `AXEL_*` naming, the dist patch.
   tool definitions copied once from dist/mcp/server.js; handlers → remote-wired store.
   Green: MCP e2e (client handshake, tools/list, tools/call query) against mock provider
   + EOF shutdown. 35/35 total.
+  - **P4b HTTP transport:** ✅ DONE — the deferred "HTTP later". `src/mcp-http.ts`
+    `startQmdRemoteMcpHttpServer` mirrors qmd's `startMcpHttpServer`
+    (`createMcpHandler(factory,{responseMode:"json"})` behind `node:http`, hand-rolled
+    `Request`/`Response` bridge — no `@modelcontextprotocol/node`), over OUR remote-wired
+    store + `createQmdRemoteMcpServer` factory. Surface: `POST /mcp` + `GET /health`.
+    Security: SDK `validateHostHeader` DNS-rebind guard + OPTIONAL static bearer.
+    CLI: `mcp --http --port <n> [--host] [--allowed-host]... [--token]`, stdio still default.
+    Exported from `index.ts`. Green: HTTP e2e via `StreamableHTTPClientTransport`
+    (handshake/tools/query) + health + Host-guard 403 + token 401/200; consumer 6/6 still met.
+    See ADR-0002.
 - **P5 consumer test (still local):** ✅ DONE 2026-10-31 — `npm pack` → scratch project installs the
   tarball → CLI + SDK + MCP exercised as an external consumer would. **6/6 = publish gate met.**
 - **P6 publish (admin, D13):** GitHub repo (public), npm account, `npm publish`,

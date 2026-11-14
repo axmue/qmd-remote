@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       # qmd pulls native deps (node-llama-cpp, better-sqlite3, sqlite-vec).
       # They must install, but no model is ever downloaded: the test suite is

@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { Client } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { startQmdRemoteMcpHttpServer } from "../dist/index.js";
+import { startQmdRemoteMcpHttpServer } from "../src/index.js";
 import { startMockServer, type MockServer } from "./helpers/mock-server.js";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");

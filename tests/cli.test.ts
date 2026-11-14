@@ -195,6 +195,35 @@ test("doctor: green on a working provider, reports dims", async () => {
   }
 });
 
+test("doctor: a verbose expand model that needs > 64 tokens is reported green (probe uses the real budget)", async () => {
+  // The chat route returns content ONLY when the caller allows a real budget
+  // (>= 100 tokens) — mimicking a reasoning-preamble expansion model that
+  // returns `content: null` at finish_reason "length" under a tiny cap. With
+  // the probe hardcoded to 64 this was a false "dead provider"; the probe now
+  // uses expandMaxTokens (default 600).
+  const mock = await startMockServer({
+    "/v1/embeddings": (body) =>
+      Array.isArray(body.input)
+        ? { data: (body.input as string[]).map((t, i) => ({ embedding: vecFor(t), index: i })) }
+        : { data: [{ embedding: vecFor(String(body.input)) }] },
+    "/v1/rerank": () => ({ results: [{ index: 0, relevance_score: 1 }] }),
+    "/v1/chat/completions": (body) => ({
+      choices: [{ message: { content: Number(body.max_tokens) >= 100 ? "lex: banana\nvec: banana smoothie" : null } }],
+    }),
+  });
+  const f = makeFixture(ALL_LOCAL);
+  f.setJobs(REMOTE_JOBS(mock.url));
+  try {
+    const r = await runCli(f, ["doctor"]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /expand\s+openai-compat\s+OK \d+ variants/);
+    const last = mock.hits["/v1/chat/completions"]?.at(-1);
+    assert.ok(Number(last?.max_tokens) >= 100, "probe must send the real expand budget, not 64");
+  } finally {
+    await mock.close();
+  }
+});
+
 test("doctor: 401 provider → exit 1, stderr/stdout names the job + HTTP 401", async () => {
   const mock = await mockProvider(true);
   const f = makeFixture(ALL_LOCAL);

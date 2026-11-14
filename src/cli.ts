@@ -14,7 +14,7 @@ import { createBackend } from "./backend/factory.js";
 import { createStoreRemote, defaultQmdDbPath, defaultQmdConfigPath } from "./store-remote.js";
 import { createQmdRemoteMcpServer, InflightGate } from "./mcp.js";
 import { startQmdRemoteMcpHttpServer } from "./mcp-http.js";
-import { EXPAND_PROMPT, parseExpansion } from "./backend/adapters/shared.js";
+import { EXPAND_PROMPT, parseExpansion, DEFAULT_EXPAND_MAX_TOKENS } from "./backend/adapters/shared.js";
 import { redactSecrets, resolveSecret } from "./backend/secrets.js";
 import { packageVersion } from "./version.js";
 import type { QmdStore } from "./store-remote.js";
@@ -424,7 +424,12 @@ async function cmdDoctor(p: Parsed): Promise<number> {
    * from its completion so the reported detail stays meaningful.
    */
   const probeExpand = async (): Promise<unknown> => {
-    const out = await backend.generate(EXPAND_PROMPT("doctor probe"), { maxTokens: 64, temperature: 0 });
+    // Use the SAME completion budget real query-expansion uses, not a tiny
+    // probe-only cap: a verbose expansion model can spend >64 tokens on a
+    // reasoning preamble before emitting its lex:/vec: lines and return
+    // `content: null` at finish_reason "length" — a false "dead provider".
+    const maxTokens = jobs.expand.expandMaxTokens ?? DEFAULT_EXPAND_MAX_TOKENS;
+    const out = await backend.generate(EXPAND_PROMPT("doctor probe"), { maxTokens, temperature: 0 });
     if (!out || typeof out.text !== "string") throw new Error(`qmd-remote: expand (${jobs.expand.provider} ${jobs.expand.model}) returned no completion`);
     return parseExpansion(out.text, "doctor probe", true);
   };

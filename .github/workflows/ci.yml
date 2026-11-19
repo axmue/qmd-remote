@@ -14,7 +14,7 @@ jobs:
     # eat the default 6 h job timeout looking like "tests run forever".
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
           node-version: 24

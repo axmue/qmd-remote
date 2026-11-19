@@ -71,10 +71,17 @@ function makeAdapter(jobName: keyof RemoteJobs, job: RemoteJobConfig): RemoteAda
   }
 }
 
+/** The untyped qmd dist/llm.js module surface qmd-remote needs (pinned 2.8.3). */
+interface QmdLlmModule {
+  LlamaCpp?: QmdLlamaCppCtor;
+  /** qmd's global-default setter (dist/llm.js, not re-exported from the package entry). */
+  setDefaultLlamaCpp?: (llm: unknown) => void;
+}
+
 /**
- * Import LlamaCpp from the installed qmd package. qmd's exports map blocks
- * subpath imports and has no `require` condition, so the class must be loaded
- * from its file path. Resolution order:
+ * Import the installed qmd package's dist/llm.js. qmd's exports map blocks
+ * subpath imports and has no `require` condition, so the module must be
+ * loaded from its file path. Resolution order:
  *   1. `import.meta.resolve("@tobilu/qmd")` → the real entry point, then
  *      `../dist/llm.js` next to it. This is the only form that works on
  *      pnpm's symlinked store and Yarn PnP.
@@ -82,7 +89,7 @@ function makeAdapter(jobName: keyof RemoteJobs, job: RemoteJobConfig): RemoteAda
  *      hoisted npm trees, and anything where (1) is unavailable).
  * The exact 2.8.3 pin makes the dist path as durable as any textual reference.
  */
-async function importLlamaCppCtor(): Promise<QmdLlamaCppCtor> {
+async function importQmdLlmModule(): Promise<QmdLlmModule> {
   const candidates: string[] = [];
   try {
     const entry = fileURLToPath(import.meta.resolve("@tobilu/qmd"));
@@ -99,14 +106,30 @@ async function importLlamaCppCtor(): Promise<QmdLlamaCppCtor> {
   }
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
-    const mod = (await import(pathToFileURL(candidate).href)) as { LlamaCpp?: QmdLlamaCppCtor };
+    const mod = (await import(pathToFileURL(candidate).href)) as QmdLlmModule;
     if (!mod.LlamaCpp) throw new Error(`qmd-remote: ${candidate} exports no LlamaCpp — package layout changed? (pinned 2.8.3)`);
-    return mod.LlamaCpp;
+    return mod;
   }
   throw new Error(
     "qmd-remote: cannot locate the installed @tobilu/qmd package (a local qmd job is configured) — " +
       `is it installed? (looked for dist/llm.js in ${candidates.length} locations)`,
   );
+}
+
+async function importLlamaCppCtor(): Promise<QmdLlamaCppCtor> {
+  return (await importQmdLlmModule()).LlamaCpp!;
+}
+
+/**
+ * qmd's `setDefaultLlamaCpp` (dist/llm.js) — the global-default seam. Needed
+ * because qmd 2.8.3's `chunkDocumentByTokens` (dist/store.js, called by
+ * `generateEmbeddings`) resolves its tokenizer via the global
+ * `getDefaultLlamaCpp()`, NOT the store's injected `llm` slot.
+ */
+export async function importSetDefaultLlamaCpp(): Promise<(llm: unknown) => void> {
+  const mod = await importQmdLlmModule();
+  if (!mod.setDefaultLlamaCpp) throw new Error("qmd-remote: installed @tobilu/qmd exports no setDefaultLlamaCpp — package layout changed? (pinned 2.8.3)");
+  return mod.setDefaultLlamaCpp;
 }
 
 /**

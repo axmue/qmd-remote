@@ -12,3 +12,4 @@ Decisions taken *after* that interview get an entry here.
 |---|---|---|---|
 | [0001](0001-review-fixes.md) | 2026-11-10 | Secret indirection, provider retries, soft-fallback boundary for query expansion, project-local index discovery | accepted |
 | [0002](0002-http-mcp-transport.md) | 2026-11-13 | Native Streamable-HTTP MCP transport (`mcp --http`), mirroring qmd's `startMcpHttpServer`; Host-guard + optional bearer; no new dependency | accepted |
+| [0003](0003-global-default-seam.md) | 2026-11-19 | Close the second seam: qmd's global default LlamaCpp (`setDefaultLlamaCpp`) — the `embed` chunking-tokenizer path leaked a 318 MB model download on clean machines (CI "runs forever") | accepted |

@@ -162,6 +162,38 @@ test("update + embed + query through the mock provider (CLI write+search path)",
   }
 });
 
+test("embed: all-remote tokenizer never resolves a local model (clean-machine proof, no GGUF download)", async () => {
+  // CI regression (2026-11): qmd 2.8.3's chunkDocumentByTokens (dist/store.js,
+  // called by generateEmbeddings) resolves its tokenizer via the GLOBAL
+  // getDefaultLlamaCpp(), not the injected backend — so an all-remote `embed`
+  // on a machine without the model cache downloaded + loaded the default
+  // 318 MB embedding model from HuggingFace (the GitHub runner "test step
+  // runs forever" hang). createStoreRemote now sets qmd's global default to
+  // the composite, whose all-remote tokenize is pure in-memory code units.
+  //
+  // Deterministic without network: fresh HOME (empty model cache) +
+  // QMD_EMBED_MODEL pointing at a nonexistent file. Without the global-seam
+  // fix, the tokenizer step fails on that file (or would download the 318 MB
+  // default with the env var unset); with the fix, nothing ever resolves it.
+  const mock = await mockProvider(false);
+  const f = makeFixture(REMOTE_JOBS(mock.url));
+  const freshHome = mkdtempSync(join(tmpdir(), "qmd-remote-freshhome-"));
+  try {
+    f.env.HOME = freshHome;
+    f.env.XDG_CACHE_HOME = join(freshHome, ".cache");
+    f.env.QMD_EMBED_MODEL = join(freshHome, "definitely-missing.gguf");
+    let r = await runCli(f, ["update"]);
+    assert.equal(r.code, 0, r.err);
+    r = await runCli(f, ["embed"]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /Embedded \d+ chunks from 3 docs/);
+    assert.ok((mock.hits["/v1/embeddings"]?.length ?? 0) > 0, "embed must hit the remote provider");
+    assert.doesNotMatch(r.out + r.err, /definitely-missing/, "no local model resolution may touch QMD_EMBED_MODEL");
+  } finally {
+    await mock.close();
+  }
+});
+
 test("query --lex-only: finds the doc with ZERO provider hits", async () => {
   const mock = await mockProvider(false);
   const f = makeFixture(ALL_LOCAL);

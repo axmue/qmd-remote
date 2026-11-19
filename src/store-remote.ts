@@ -6,10 +6,18 @@
  * LLM of every search/embed path via `store.llm ?? getDefaultLlamaCpp()` on
  * the internal store, so one assignment covers search AND reindex. No patch.
  *
- * Seam completion (two closure-capture wrinkles in stock createStore):
+ * Seam completion (three qmd-internal capture wrinkles, all verified against
+ * stock dist 2.8.3):
  *   - `store.searchVector` captured the pre-swap LlamaCpp's embedModelName →
  *     re-wired to the backend's name (one-line reassignment over the exposed
  *     `internal.searchVec`).
+ *   - `chunkDocumentByTokens` (dist/store.js, called by `generateEmbeddings`
+ *     → `store.embed()`) resolves its tokenizer via the GLOBAL
+ *     `getDefaultLlamaCpp()`, not `store.llm` → the composite is also set as
+ *     qmd's global default (dist/llm.js `setDefaultLlamaCpp`). Without this,
+ *     an all-remote `embed` on a clean machine downloads + loads the default
+ *     318 MB embedding model just to tokenize (spec D2's `getLlm(store)`
+ *     claim covered embed/rerank/expand — not the chunking tokenizer).
  *   - `store.close` disposes the pre-swap instance (its closure) → wrapped so
  *     the backend (which may own a real LlamaCpp for local jobs) is disposed
  *     too.
@@ -18,7 +26,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createStore, type QMDStore } from "@tobilu/qmd";
-import { createBackend, type QmdLlamaCppCtor } from "./backend/factory.js";
+import { createBackend, importSetDefaultLlamaCpp, type QmdLlamaCppCtor } from "./backend/factory.js";
 import { loadRemoteConfig } from "./config-file.js";
 
 export type QmdStore = QMDStore;
@@ -118,6 +126,13 @@ export async function createStoreRemote(options: CreateStoreRemoteOptions = {}):
     await (internal.llm as { dispose?: () => Promise<void> }).dispose?.();
   }
   internal.llm = backend;
+
+  // 3b. global-default seam (see header, wrinkle 2): route qmd's hardcoded
+  //     `getDefaultLlamaCpp()` tokenizer path through the composite too.
+  //     All-remote ⇒ lossless code-unit tokenizer (no download, no native
+  //     lib); mixed ⇒ the shared local LlamaCpp the composite already owns.
+  const setDefaultLlamaCpp = await importSetDefaultLlamaCpp();
+  setDefaultLlamaCpp(backend);
 
   // 4a. seam completion: searchVector's closure still names the pre-swap
   //     LlamaCpp's embed model — re-wire it over the exposed internal.

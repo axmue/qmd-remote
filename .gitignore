@@ -3,3 +3,7 @@ dist/
 *.tgz
 scratch/
 .DS_Store
+
+# repo subagent definitions are committed; the rest of .pi/ is not
+.pi/*
+!.pi/agents/

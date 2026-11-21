@@ -71,11 +71,11 @@ function makeAdapter(jobName: keyof RemoteJobs, job: RemoteJobConfig): RemoteAda
   }
 }
 
-/** The untyped qmd dist/llm.js module surface qmd-remote needs (pinned 2.8.3). */
+/** The untyped qmd dist/llm.js module surface qmd-remote needs (pinned 2.9.0). */
 interface QmdLlmModule {
   LlamaCpp?: QmdLlamaCppCtor;
-  /** qmd's global-default setter (dist/llm.js, not re-exported from the package entry). */
-  setDefaultLlamaCpp?: (llm: unknown) => void;
+  /** qmd's per-llm session wrapper (dist/llm.js, not re-exported from the package entry). */
+  withLLMSessionForLlm?: (llm: unknown, fn: (session: unknown) => unknown, options?: { signal?: AbortSignal; name?: string }) => Promise<unknown>;
 }
 
 /**
@@ -87,7 +87,7 @@ interface QmdLlmModule {
  *      pnpm's symlinked store and Yarn PnP.
  *   2. walk up from this file looking for `node_modules/@tobilu/qmd` (classic
  *      hoisted npm trees, and anything where (1) is unavailable).
- * The exact 2.8.3 pin makes the dist path as durable as any textual reference.
+ * The exact 2.9.0 pin makes the dist path as durable as any textual reference.
  */
 async function importQmdLlmModule(): Promise<QmdLlmModule> {
   const candidates: string[] = [];
@@ -107,7 +107,7 @@ async function importQmdLlmModule(): Promise<QmdLlmModule> {
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
     const mod = (await import(pathToFileURL(candidate).href)) as QmdLlmModule;
-    if (!mod.LlamaCpp) throw new Error(`qmd-remote: ${candidate} exports no LlamaCpp — package layout changed? (pinned 2.8.3)`);
+    if (!mod.LlamaCpp) throw new Error(`qmd-remote: ${candidate} exports no LlamaCpp — package layout changed? (pinned 2.9.0)`);
     return mod;
   }
   throw new Error(
@@ -121,15 +121,15 @@ async function importLlamaCppCtor(): Promise<QmdLlamaCppCtor> {
 }
 
 /**
- * qmd's `setDefaultLlamaCpp` (dist/llm.js) — the global-default seam. Needed
- * because qmd 2.8.3's `chunkDocumentByTokens` (dist/store.js, called by
- * `generateEmbeddings`) resolves its tokenizer via the global
- * `getDefaultLlamaCpp()`, NOT the store's injected `llm` slot.
+ * qmd's `withLLMSessionForLlm` (dist/llm.js) — not re-exported from the
+ * package entry. Needed for the `searchVector` re-wire in store-remote.ts,
+ * which mirrors qmd's own `store.searchVector` body (session-scoped embed of
+ * the query through the injected backend).
  */
-export async function importSetDefaultLlamaCpp(): Promise<(llm: unknown) => void> {
+export async function importWithLLMSessionForLlm(): Promise<NonNullable<QmdLlmModule["withLLMSessionForLlm"]>> {
   const mod = await importQmdLlmModule();
-  if (!mod.setDefaultLlamaCpp) throw new Error("qmd-remote: installed @tobilu/qmd exports no setDefaultLlamaCpp — package layout changed? (pinned 2.8.3)");
-  return mod.setDefaultLlamaCpp;
+  if (!mod.withLLMSessionForLlm) throw new Error("qmd-remote: installed @tobilu/qmd exports no withLLMSessionForLlm — package layout changed? (pinned 2.9.0)");
+  return mod.withLLMSessionForLlm;
 }
 
 /**

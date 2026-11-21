@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
-    "@tobilu/qmd": "2.8.3",
+    "@tobilu/qmd": "2.9.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {
@@ -46,6 +46,6 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
-    "node-llama-cpp@3.20.0": true
+    "node-llama-cpp@3.22.3": true
   }
 }

@@ -47,13 +47,36 @@ test("searchVector is re-wired to the backend's embedModelName", async () => {
       return [];
     };
     try {
-      await store.searchVector("anything", { limit: 7 });
+      // 2.9.0: the re-wire mirrors qmd's own body — session-scoped, with the
+      // metadata filter as the 7th internal searchVec argument.
+      const filter = { field: "type", operator: "eq", value: "bug" } as const;
+      await store.searchVector("anything", { limit: 7, filter });
     } finally {
       internal.searchVec = original;
     }
     assert.equal(rec[0], "anything");
     assert.equal(rec[1], "fake:embed-model", "searchVector must name the BACKEND's embed model");
     assert.equal(rec[2], 7);
+    assert.deepEqual(rec[6], { field: "type", operator: "eq", value: "bug" }, "the parsed metadata filter must reach the internal searchVec");
+
+    // A malformed filter throws before any search — parseMetadataFilter is
+    // applied in the re-wire, exactly like qmd's own store.searchVector.
+    const internal2 = store.internal as unknown as { searchVec: (...args: unknown[]) => Promise<unknown[]> };
+    const original2 = internal2.searchVec;
+    let calls = 0;
+    internal2.searchVec = async () => {
+      calls++;
+      return [];
+    };
+    try {
+      await assert.rejects(
+        () => store.searchVector("anything", { filter: { nonsense: true } as never }),
+        /metadata filter/i,
+      );
+      assert.equal(calls, 0, "a malformed filter must not reach the search");
+    } finally {
+      internal2.searchVec = original2;
+    }
   } finally {
     await store.close();
   }

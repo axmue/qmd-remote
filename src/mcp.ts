@@ -1,14 +1,14 @@
 /**
  * qmd-remote MCP server — the thin agent-facing door (spec D3).
  *
- * The tool surface (4 tools + the qmd:// resource + instructions) is COPIED
- * verbatim from qmd 2.8.3's internal createMcpServer(dist/mcp/server.js:122 —
+ * The tool surface (5 tools + the qmd:// resource + instructions) is COPIED
+ * verbatim from qmd 2.9.0's internal createMcpServer(dist/mcp/server.js:194 —
  * not exported; its exported entries build their own store with no injection
  * point, so a patch-free package must carry its own copy). Descriptions and
  * zod schemas are re-synced DELIBERATELY when the qmd pin changes (D11 flow)
  * — never silently.
  *
- * Server SDK + zod are pinned to qmd 2.8.3's exact versions so a consumer
+ * Server SDK + zod are pinned to qmd 2.9.0's exact versions so a consumer
  * tree carries one MCP SDK and identical protocol-era behavior.
  *
  * Stdio purity: this module must never write to stdout outside protocol
@@ -21,15 +21,47 @@
  * names + input-schema keys) and fails when the pin moves, so a bump forces a
  * deliberate re-sync instead of silently serving a stale surface.
  */
-export const COPIED_FROM_QMD_VERSION = "2.8.3";
+export const COPIED_FROM_QMD_VERSION = "2.9.0";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
-import { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES, type QMDStore } from "@tobilu/qmd";
+import {
+  extractSnippet,
+  addLineNumbers,
+  DEFAULT_MULTI_GET_MAX_BYTES,
+  parseMetadataFilter,
+  parseMetadataMatch,
+  MetadataBindingBudgetError,
+  type QMDStore,
+  type MetadataFilter,
+  type MetadataMatch,
+  type ListMetadataResult,
+} from "@tobilu/qmd";
 import { z } from "zod";
 import { packageVersion } from "./version.js";
 
 // =============================================================================
-// Helpers (copied from dist/mcp/server.js:26-48)
+// Helpers (copied from dist/mcp/server.js:29-63)
 // =============================================================================
+
+/** Validate an untrusted `filter` argument through the shared runtime
+ * validator. Returns the parse error message when invalid. */
+function validateFilterArgument(filter?: Record<string, unknown>): { filter?: MetadataFilter; error?: string } {
+  if (filter === undefined) return {};
+  try {
+    return { filter: parseMetadataFilter(filter) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Same grammar as the filter, validated against metadata entries for discovery. */
+function validateMatchArgument(match?: Record<string, unknown>): { match?: MetadataMatch; error?: string } {
+  if (match === undefined) return {};
+  try {
+    return { match: parseMetadataMatch(match) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 /** Encode a path for use in qmd:// URIs (slashes preserved). */
 function encodeQmdPath(path: string): string {
@@ -93,18 +125,20 @@ export class InflightGate {
 // =============================================================================
 
 async function buildInstructions(store: QMDStore): Promise<string> {
-  const status = await store.getStatus();
+  // Instructions use index facts, not metadata overviews. Do not rank keys on
+  // initialization or on each stateless HTTP request just to discard them.
+  const status = store.internal.getStatusSummary();
   const globalCtx = await store.getGlobalContext();
   const lines: string[] = [];
   // --- What is this? ---
   lines.push(`QMD is your local search engine over ${status.totalDocuments} markdown documents.`);
   if (globalCtx) lines.push(`Context: ${globalCtx}`);
   // --- What's searchable? ---
-  // Names only — per-collection counts/descriptions are available via `status`.
-  const collections = await store.listCollections();
-  if (collections.length > 0) {
+  // Emit names only — the per-collection doc counts and descriptions can run to ~1.5 KB
+  // across a dozen collections, and the same info is available on demand via the `status` tool.
+  if (status.collections.length > 0) {
     lines.push("");
-    const names = collections.map((c) => c.name).join(", ");
+    const names = status.collections.map((c) => c.name).join(", ");
     lines.push(`Collections (scope with \`collections\` parameter): ${names}`);
     lines.push("Call the `status` tool for collection descriptions, paths, and per-collection doc counts.");
   }
@@ -155,7 +189,7 @@ export interface QmdRemoteMcpServerOptions {
 
 /**
  * Build the qmd-remote MCP server over a prepared (remote-wired) qmd store.
- * Tool names/descriptions/schemas mirror qmd 2.8.3's MCP server.
+ * Tool names/descriptions/schemas mirror qmd 2.9.0's MCP server.
  */
 export async function createQmdRemoteMcpServer(store: QMDStore, options: QmdRemoteMcpServerOptions = {}): Promise<McpServer> {
   const inflight = options.inflight ?? new InflightGate();
@@ -200,7 +234,7 @@ export async function createQmdRemoteMcpServer(store: QMDStore, options: QmdRemo
   }));
 
   // ---------------------------------------------------------------------------
-  // Tool: query (Primary search tool) — description copied verbatim (qmd 2.8.3)
+  // Tool: query (Primary search tool) — description copied verbatim (qmd 2.9.0)
   // ---------------------------------------------------------------------------
   const subSearchSchema = z.object({
     type: z.enum(["lex", "vec", "hyde"]).describe("lex = BM25 keywords (supports \"phrase\" and -negation); " +
@@ -280,10 +314,20 @@ Intent-aware lex (C++ performance, not sports):
       minScore: z.number().optional().default(0).describe("Min relevance 0-1 (default: 0)"),
       candidateLimit: z.number().optional().describe("Maximum candidates to rerank (default: 40, lower = faster but may miss results)"),
       collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
+      filter: z.record(z.string(), z.unknown()).optional().describe("Metadata filter (recursive JSON AST). Every returned result satisfies it. " +
+        "Nodes are operator-discriminated: logical groups {operator:'and'|'or', operands:[...]}, " +
+        "negation {operator:'not', operand:{...}}, and conditions {field, operator, value} with " +
+        "operators eq/ne/gt/gte/lt/lte (comparison), in/nin/all (membership), contains/prefix/suffix (text), " +
+        "type (value is 'string'|'number'|'boolean'), exists (presence). " +
+        "Values are typed exactly (no coercion); missing keys do not match ne/nin. " +
+        "Conditions with a string value may add caseInsensitive:true (ASCII folding). " +
+        "Example: {\"operator\":\"and\",\"operands\":[{\"field\":\"topics\",\"operator\":\"all\",\"value\":[\"typescript\"]}," +
+        "{\"field\":\"status\",\"operator\":\"ne\",\"value\":\"draft\"}]}"),
       intent: z.string().optional().describe("Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."),
       rerank: z.boolean().optional().default(true).describe("Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines."),
     }),
-  }, track(async ({ query, searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
+  }, track(async ({ query, searches, limit, minScore, candidateLimit, collections, filter, intent, rerank }, ctx) => {
+    // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
     if (!query && (!searches || searches.length === 0)) {
       return {
         content: [{ type: "text" as const, text: "Error: provide either 'query' (plain text) or 'searches' (typed sub-queries)" }],
@@ -296,13 +340,28 @@ Intent-aware lex (C++ performance, not sports):
         isError: true,
       };
     }
+    const filterValidation = validateFilterArgument(filter);
+    if (filterValidation.error) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${filterValidation.error}` }],
+        isError: true,
+      };
+    }
+    // Use default collections if none specified
     const effectiveCollections = collections ?? defaultCollectionNames;
+    // Plain `query` is auto-expanded by the SDK (expand → fuse → rerank);
+    // `searches` runs the caller's typed sub-queries directly.
     const searchOptions = query
       ? { query }
       : { queries: (searches ?? []).map((s) => ({ type: s.type, query: s.query })) };
+    // The SDK's per-request abort signal is cancelled when the client goes
+    // away (or the transport closes), so remote embedding/rerank stages stop
+    // instead of finishing work nobody can read.
     const results = await store.search({
       ...searchOptions,
+      signal: ctx.mcpReq.signal,
       collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+      filter: filterValidation.filter,
       limit,
       minScore,
       candidateLimit,
@@ -323,6 +382,7 @@ Intent-aware lex (C++ performance, not sports):
         title: r.title,
         score: Math.round(r.score * 100) / 100,
         context: r.context,
+        ...(Object.keys(r.metadata).length > 0 ? { metadata: r.metadata } : {}),
         line,
         snippet: addLineNumbers(snippet, line),
       };
@@ -334,7 +394,7 @@ Intent-aware lex (C++ performance, not sports):
   }));
 
   // ---------------------------------------------------------------------------
-  // Tool: get (Retrieve document) — copied verbatim (qmd 2.8.3)
+  // Tool: get (Retrieve document) — copied verbatim (qmd 2.9.0)
   // ---------------------------------------------------------------------------
   server.registerTool("get", {
     title: "Get Document",
@@ -400,7 +460,7 @@ Intent-aware lex (C++ performance, not sports):
   }));
 
   // ---------------------------------------------------------------------------
-  // Tool: multi_get (Retrieve multiple documents) — copied verbatim (qmd 2.8.3)
+  // Tool: multi_get (Retrieve multiple documents) — copied verbatim (qmd 2.9.0)
   // ---------------------------------------------------------------------------
   server.registerTool("multi_get", {
     title: "Multi-Get Documents",
@@ -464,7 +524,7 @@ Intent-aware lex (C++ performance, not sports):
   }));
 
   // ---------------------------------------------------------------------------
-  // Tool: status (Index status) — copied verbatim (qmd 2.8.3)
+  // Tool: status (Index status) — copied verbatim (qmd 2.9.0)
   // ---------------------------------------------------------------------------
   server.registerTool("status", {
     title: "Index Status",
@@ -482,6 +542,14 @@ Intent-aware lex (C++ performance, not sports):
     ];
     for (const col of status.collections) {
       summary.push(`    - ${col.name}: ${col.path} (${col.documents} docs)`);
+      if (col.metadataKeys.length > 0) {
+        const keyLabels = col.metadataKeys.map(overview => `${overview.key} (${overview.types.join(" | ")})`);
+        const hiddenKeys = col.metadataKeyCount - col.metadataKeys.length;
+        summary.push(`      metadata keys: ${keyLabels.join(", ")}${hiddenKeys > 0 ? `, +${hiddenKeys} more` : ""}`);
+      }
+    }
+    if (status.collections.some(col => col.metadataKeys.length > 0)) {
+      summary.push(`  Metadata: call the 'metadata' tool to see values and counts before writing a 'filter'`);
     }
     return {
       content: [{ type: "text" as const, text: summary.join("\n") }],
@@ -489,5 +557,128 @@ Intent-aware lex (C++ performance, not sports):
     };
   }));
 
+  // ---------------------------------------------------------------------------
+  // Tool: metadata (Metadata discovery) — name/description/schema copied
+  // verbatim (qmd 2.9.0); the text rendering is our own compact version (see
+  // formatMetadataSummaries — qmd's formatter is an unexported subpath).
+  // ---------------------------------------------------------------------------
+  server.registerTool("metadata", {
+    title: "Metadata Discovery",
+    description: `Discover which metadata keys exist, what types they hold, and how many documents share each value, so you can write a \`filter\` for the query tool from what is indexed instead of guessing.
+
+## Mental model
+
+\`filter\` selects WHICH documents are counted. \`match\` selects WHICH metadata entries of those documents are reported. Both take the same recursive AST as the query tool's \`filter\`. A condition tests one \`field\` of the record under evaluation: for \`filter\` the record is a document and \`field\` names one of its metadata keys, for \`match\` the record is a metadata entry and \`field\` is \`"key"\` or \`"value"\`. Every operator applies to a match except \`exists\` and \`all\`, which have no meaning for a single entry.
+
+| match | Question answered |
+|---|---|
+| (none) | Which keys exist, with a window of values each |
+| \`{"field":"key","operator":"eq","value":"topics"}\` | Everything about one key |
+| \`{"field":"key","operator":"prefix","value":"mem-"}\` | A family of keys |
+| \`{"field":"value","operator":"eq","value":"docs-team"}\` | Which keys hold this value |
+| \`{"operator":"and","operands":[{"field":"key","operator":"eq","value":"priority"},{"field":"value","operator":"gte","value":3}]}\` | Values of one key above a threshold |
+
+Add \`filter\` to any of these to see what remains after narrowing. The result then reports \`filteredDocuments\`, and every coverage count is measured against that population.
+
+## Reading the result
+
+Counts are documents, not values. \`keys\` is one window of \`totalKeys\` in coverage order, and \`remainingKeys\` is the exact count after it. Each key splits by type: metadata is validated per document, so a key can hold numbers in some files and strings in others, and each type reports its own \`documents\`, \`distinctValues\`, a window of \`values\`, \`remainingValues\`, and, for numbers, \`range\` (min, median, max). Page keys with \`keyOffset\` and values with \`valueOffset\`, which applies to every key in the result and so reads best after \`match\` narrows to one key.
+
+Every value reported here can be matched with \`{field: '<metadata-key>', operator: 'eq', value}\` under the same collections.`,
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    inputSchema: z.object({
+      collections: z.array(z.string()).optional().describe("Restrict to these collections (default: the same collections query searches)"),
+      match: z.record(z.string(), z.unknown()).optional().describe("Report only metadata entries matching this condition. Same recursive AST as 'filter', evaluated per entry: " +
+        "a condition's field is 'key' (the entry's key name) or 'value' (its value). Default: every entry. " +
+        "Example: {\"field\":\"key\",\"operator\":\"eq\",\"value\":\"topics\"}"),
+      filter: z.record(z.string(), z.unknown()).optional().describe("Count only documents matching this metadata filter. Same recursive AST as the query tool's 'filter'. " +
+        "Example: {\"field\":\"status\",\"operator\":\"eq\",\"value\":\"published\"}"),
+      keyLimit: z.number().int().positive().optional().default(50).describe("Keys reported (default: 50). 'remainingKeys' says how many follow the window"),
+      keyOffset: z.number().int().nonnegative().optional().default(0).describe("Keys skipped before the window, in report order (default: 0)"),
+      valueLimit: z.number().int().positive().optional().default(10).describe("Values reported per key and type (default: 10). 'remainingValues' says how many follow the window"),
+      valueOffset: z.number().int().nonnegative().optional().default(0).describe("Values skipped per key and type before the window, in 'sort' order (default: 0)"),
+      sort: z.enum(["count", "value"]).optional().default("count").describe("Order values by document count descending (default) or by value ascending"),
+      minCount: z.number().int().positive().optional().default(1).describe("Hide values held by fewer documents than this (default: 1)"),
+    }),
+  }, track(async ({ collections, match, filter, keyLimit, keyOffset, valueLimit, valueOffset, sort, minCount }) => {
+    const matchValidation = validateMatchArgument(match);
+    const filterValidation = validateFilterArgument(filter);
+    const validationError = matchValidation.error ?? filterValidation.error;
+    if (validationError) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${validationError}` }],
+        isError: true,
+      };
+    }
+    const effectiveCollections = collections ?? defaultCollectionNames;
+    let result;
+    try {
+      result = await store.listMetadata({
+        collection: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+        match: matchValidation.match,
+        filter: filterValidation.filter,
+        keyLimit,
+        keyOffset,
+        valueLimit,
+        valueOffset,
+        sort,
+        minCount,
+      });
+    } catch (err) {
+      if (!(err instanceof MetadataBindingBudgetError)) throw err;
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+        isError: true,
+      };
+    }
+    const text = formatMetadataSummaries(result, keyOffset);
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: result,
+    };
+  }));
+
   return server;
+}
+
+/**
+ * Plain-text rendering of a listMetadata result — our own compact version.
+ * qmd's formatMetadataKeySummaries (dist/metadata-format.js) is an unexported
+ * subpath, so a patch-free package cannot import it; the drift check compares
+ * tool names + schema keys, not the rendered text. Structured consumers read
+ * `structuredContent` verbatim.
+ */
+function formatMetadataSummaries(result: ListMetadataResult, keyOffset: number): string {
+  const blocks: string[] = [];
+  if (result.filteredDocuments !== undefined) {
+    blocks.push(`filter: ${result.filteredDocuments} of ${result.documents} documents`);
+  }
+  if (result.totalKeys === 0) {
+    blocks.push("No metadata matches. Call without match/filter to see which keys exist, or check the status tool for collections with metadata.");
+  } else if (result.keys.length === 0) {
+    const keyLabel = result.totalKeys === 1 ? "key" : "keys";
+    blocks.push(`No keys at keyOffset ${keyOffset}, ${result.totalKeys} ${keyLabel} in total.`);
+  }
+  const formatValue = (v: unknown): string => (typeof v === "string" ? JSON.stringify(v) : String(v));
+  for (const key of result.keys) {
+    const typeLabel = key.types.map((t) => t.type).join(" | ");
+    const coverage = `${key.documents} of ${result.filteredDocuments ?? result.documents} documents`;
+    const lines = [`${key.key}  ${typeLabel}  ${coverage}`];
+    for (const t of key.types) {
+      const values = t.values.map((v) => `${formatValue(v.value)} (${v.documents})`).join(", ");
+      lines.push(`  ${t.type}: ${values.length > 0 ? values : "(none)"}`);
+      if (t.range) {
+        lines.push(`  ${t.type} range: min=${t.range.min} median=${t.range.median} max=${t.range.max}`);
+      }
+    }
+    const remainingValues = key.types.reduce((sum, t) => sum + t.remainingValues, 0);
+    if (remainingValues > 0) {
+      lines.push(`${remainingValues} more ${remainingValues === 1 ? "value" : "values"}, use a higher 'valueLimit' or a 'valueOffset'`);
+    }
+    blocks.push(lines.join("\n"));
+  }
+  if (result.remainingKeys > 0) {
+    blocks.push(`${result.remainingKeys} more ${result.remainingKeys === 1 ? "key" : "keys"}, use a higher 'keyLimit' or a 'keyOffset'`);
+  }
+  return blocks.join("\n\n");
 }

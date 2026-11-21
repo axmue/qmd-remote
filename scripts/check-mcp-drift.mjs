@@ -57,9 +57,19 @@ try {
 const toolNames = (src) => [...src.matchAll(/registerTool\(\s*["']([^"']+)["']/g)].map((m) => m[1]).sort();
 
 /**
+ * Remove string literals (single/double-quoted, backticked) so the key scan
+ * never mistakes the braces inside a `.describe("...")` payload for schema
+ * structure — the query tool's `filter` describe alone embeds nested `{...}}`
+ * sequences that would truncate a naive lazy match.
+ */
+const stripStringLiterals = (s) => s.replace(/["'`][^"'`]*["'`]/g, '""');
+
+/**
  * Input-schema keys per tool: the block between a registerTool call and the
- * next one, scanned for `key: z.` property definitions. Coarse on purpose —
- * it catches added/removed/renamed parameters without depending on formatting.
+ * next one, scanned for `key: z.` property definitions after string literals
+ * are stripped (see stripStringLiterals — the lazy schema regex stops at the
+ * first `}` inside a description string otherwise). Coarse on purpose — it
+ * catches added/removed/renamed parameters without depending on formatting.
  */
 function schemaKeys(src) {
   const out = {};
@@ -67,7 +77,7 @@ function schemaKeys(src) {
   for (let i = 0; i < calls.length; i++) {
     const start = calls[i].index;
     const end = i + 1 < calls.length ? calls[i + 1].index : src.length;
-    const block = src.slice(start, end);
+    const block = stripStringLiterals(src.slice(start, end));
     const schema = /inputSchema:\s*(?:z\.object\(\{|\{)([\s\S]*?)\}\s*\)?,?\s*\}/.exec(block)?.[1] ?? "";
     out[calls[i][1]] = [...schema.matchAll(/(?:^|[\s{,])([A-Za-z_][\w]*)\s*:\s*z\./g)].map((m) => m[1]).sort();
   }

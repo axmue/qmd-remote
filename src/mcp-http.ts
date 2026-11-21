@@ -1,13 +1,17 @@
 /**
  * qmd-remote — MCP server over Streamable HTTP (the "HTTP later" from spec P4).
  *
- * Mirrors qmd 2.8.3's `dist/mcp/server.js::startMcpHttpServer`: the official
- * 2026-07-28 HTTP entry `createMcpHandler(factory, { responseMode: "json" })`
- * behind a plain `node:http` server. The one deliberate difference is the
- * store — ours is the remote-wired store from `createStoreRemote` (local embed
- * + remote rerank/expand on `store.internal.llm`) and the factory is our own
- * `createQmdRemoteMcpServer`. No `@modelcontextprotocol/node`: like qmd, we
- * hand-roll the `node:http ↔ web Request/Response` bridge.
+ * Mirrors qmd 2.9.0's `dist/mcp/server.js::startMcpHttpServer` in the way it
+ * carries the MCP exchange: the official 2026-07-28 HTTP entry
+ * `createMcpHandler(factory, { responseMode: "json" })` behind a plain
+ * `node:http` server — that core is unchanged in 2.9.0 (it adds REST
+ * `/query` / `/search` / `/metadata` aliases, an Origin+Host origin guard,
+ * `uptime` in `/health`, and a bounded drain shutdown around the listener;
+ * none of those is mirrored here, below). The one deliberate difference is
+ * the store — ours is the remote-wired store from `createStoreRemote` (local
+ * embed + remote rerank/expand on `store.internal.llm`) and the factory is our
+ * own `createQmdRemoteMcpServer`. No `@modelcontextprotocol/node`: like qmd,
+ * we hand-roll the `node:http ↔ web Request/Response` bridge.
  *
  * Surface: `POST /mcp` (sessionless JSON) + `GET /health`. No REST
  * `/query` /`/search` aliases (added only if a non-MCP client needs them).

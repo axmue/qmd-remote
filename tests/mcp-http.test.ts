@@ -124,7 +124,7 @@ test("mcp-http: Streamable HTTP client → initialize → tools/list → tools/c
       assert.equal(info?.name, "qmd-remote");
 
       const tools = await client.listTools();
-      assert.deepEqual(tools.tools.map((t) => t.name).sort(), ["get", "multi_get", "query", "status"]);
+      assert.deepEqual(tools.tools.map((t) => t.name).sort(), ["get", "metadata", "multi_get", "query", "status"]);
 
       const hitsBefore = mock.hits["/v1/embeddings"]?.length ?? 0;
       const q = await client.callTool({ name: "query", arguments: { query: "banana smoothie" } });
@@ -168,7 +168,7 @@ test("mcp-http: optional bearer token — missing/garbage → 401, correct → 2
     await client.connect(transport);
     try {
       const tools = await client.listTools();
-      assert.ok(tools.tools.length === 4);
+      assert.ok(tools.tools.length === 5);
     } finally {
       await client.close();
     }

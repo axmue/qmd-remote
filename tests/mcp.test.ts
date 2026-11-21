@@ -1,7 +1,8 @@
 /**
  * MCP e2e — drives the BUILT `qmd-remote mcp` server with a real MCP client
  * over stdio (exactly how an agent would), against a pre-indexed temp store
- * and a loopback mock provider.
+ * and a loopback mock provider. Covers the full tool surface: query
+ * (incl. metadata `filter`), get, status, and the metadata discovery tool.
  */
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
@@ -57,8 +58,14 @@ async function makeIndexedFixture(mockUrl: string): Promise<{ root: string; env:
   const root = mkdtempSync(join(tmpdir(), "qmd-remote-mcp-"));
   const docsDir = join(root, "docs");
   mkdirSync(docsDir, { recursive: true });
-  writeFileSync(join(docsDir, "banana.md"), "# Banana smoothie\n\nBlend 2 bananas, yogurt and honey for a banana smoothie.\n");
-  writeFileSync(join(docsDir, "apple.md"), "# Apple pie\n\nApple pie recipe with a lattice crust and cinnamon.\n");
+  writeFileSync(
+    join(docsDir, "banana.md"),
+    "---\nqmd:\n  metadata:\n    type: bug\n---\n# Banana smoothie\n\nBlend 2 bananas, yogurt and honey for a banana smoothie.\n",
+  );
+  writeFileSync(
+    join(docsDir, "apple.md"),
+    "---\nqmd:\n  metadata:\n    type: feature\n---\n# Apple pie\n\nApple pie recipe with a lattice crust and cinnamon.\n",
+  );
   const cfgDir = join(root, "qmd-config");
   mkdirSync(cfgDir, { recursive: true });
   writeFileSync(join(cfgDir, "index.yml"), `collections:\n  mcp:\n    path: ${docsDir}\n`);
@@ -120,10 +127,10 @@ test("mcp: initialize → tools/list → tools/call (query/get/status) over stdi
       assert.ok(info, "server version missing");
       assert.equal(info.name, "qmd-remote");
 
-      // 2. tools/list: exactly the four qmd tools
+      // 2. tools/list: exactly the five qmd tools
       const tools = await client.listTools();
       const names = tools.tools.map((t) => t.name).sort();
-      assert.deepEqual(names, ["get", "multi_get", "query", "status"]);
+      assert.deepEqual(names, ["get", "metadata", "multi_get", "query", "status"]);
 
       // 3. tools/call query → banana doc, remote provider hit
       const hitsBefore = mock.hits["/v1/embeddings"]?.length ?? 0;
@@ -142,6 +149,50 @@ test("mcp: initialize → tools/list → tools/call (query/get/status) over stdi
       // 5. tools/call status → counts
       const s = await client.callTool({ name: "status", arguments: {} });
       assert.match(JSON.stringify(s), /Total documents: 2/);
+
+      // 6. tools/call metadata → typed key summaries from qmd.metadata frontmatter
+      const md = await client.callTool({ name: "metadata", arguments: {} });
+      assert.equal(md.isError, undefined);
+      const mdSc = (md.structuredContent ?? {}) as {
+        totalKeys: number;
+        keys: Array<{
+          key: string;
+          types: Array<{ type: string; values: Array<{ value: unknown; documents: number }> }>;
+        }>;
+      };
+      assert.equal(mdSc.totalKeys, 1);
+      assert.equal(mdSc.keys[0].key, "type");
+      assert.equal(mdSc.keys[0].types[0].type, "string");
+      assert.deepEqual(mdSc.keys[0].types[0].values.map((v) => v.value).sort(), ["bug", "feature"]);
+      assert.match(JSON.stringify(md), /type/);
+
+      // 7. query accepts a metadata `filter`: with the fixture docs' metadata
+      //    (banana: type=bug, apple: type=feature) and a query that both docs
+      //    can match, each filter admits exactly its own doc.
+      const fq = await client.callTool({
+        name: "query",
+        arguments: { query: "banana smoothie", filter: { field: "type", operator: "eq", value: "bug" } },
+      });
+      const fqText = JSON.stringify(fq);
+      assert.match(fqText, /banana\.md/);
+      assert.doesNotMatch(fqText, /apple\.md/);
+      const fnq = await client.callTool({
+        name: "query",
+        arguments: { query: "banana smoothie", filter: { field: "type", operator: "eq", value: "feature" } },
+      });
+      const fnqText = JSON.stringify(fnq);
+      assert.match(fnqText, /apple\.md/);
+      assert.doesNotMatch(fnqText, /banana\.md/);
+      // A malformed filter (missing operator) comes back as a validation-error
+      // tool result, not a crash — the server keeps serving.
+      const ff = await client.callTool({
+        name: "query",
+        arguments: { query: "banana smoothie", filter: { field: "type" } },
+      });
+      assert.equal(ff.isError, true);
+      assert.match(JSON.stringify(ff), /Error:/);
+      const s2 = await client.callTool({ name: "status", arguments: {} });
+      assert.match(JSON.stringify(s2), /Total documents: 2/);
     } finally {
       await client.close();
     }

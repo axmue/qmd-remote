@@ -10,20 +10,8 @@ The project documentation is organized into functional categories in the `docs/`
 - **[ADR Log](docs/adr/index.md)**: decisions taken after the spec interview.
 - **[Working notes](docs/tmp/)**: phase plans (P1–P6), the local-usage
   walkthrough, code reviews. Kept, never deleted.
-- **[Development Guides](docs/dev/)**: [Subagent Workflow](docs/dev/subagent-workflow.md)
-  — how plans get implemented with the `subagent` tool (roles, standard flow,
-  concurrency cap, long jobs, guardrails).
-- No `docs/arch/` yet — the spec covers the architecture at this size;
-  add it when the spec stops being enough.
-
----
-
-## 🤖 Subagents
-
-- The `subagent` tool (pi's bundled example extension) spawns scout/planner/worker/reviewer agents from `.pi/agents/`. **Always pass `agentScope: "both"`** — the default doesn't see the repo agents.
-- Standard flow + guardrails (subagents never commit; parent commits at green checkpoints — `npm run check`; reviewer writes `docs/tmp/<date>-<topic>-implementation-review.md`): [docs/dev/subagent-workflow.md](docs/dev/subagent-workflow.md)
-- **Concurrency cap: max 2 tasks per `tasks` array** (the model host must not serve concurrent model loads). No job-level timeout in pi, so long jobs are fine — but the parent is blocked while they run, and Esc/crash/machine sleep kills the children.
-- The full *Done When* bar still applies to what subagents produce: tests that fail without the change, loopback mock for provider traffic, `npm run test:consumer` when the packaged surface is touched.
+- No `docs/arch/` or `docs/dev/` yet — the spec covers the architecture at this
+  size; add them when the spec stops being enough.
 
 ---
 

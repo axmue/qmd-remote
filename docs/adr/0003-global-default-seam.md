@@ -1,7 +1,8 @@
 # ADR-0003 — Close the second seam: qmd's global default LlamaCpp
 
-**Date:** 2026-11-19 · **Status:** accepted · Extends D2 (injection =
-patch-free) with a second injection point.
+**Date:** 2026-11-19 · **Status:** superseded by [ADR-0004](0004-qmd-2-9-0-upgrade.md)
+(qmd 2.9.0 closed the hole upstream; the workaround was retired 2026-11-21).
+The historical record below stays accurate for the 2.8.3 pin.
 
 ## Context
 

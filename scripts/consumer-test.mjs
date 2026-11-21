@@ -162,7 +162,7 @@ try {
   mock = await startMock(false);
   const docsDir = join(tmp, "docs");
   mkdirSync(docsDir, { recursive: true });
-  writeFileSync(join(docsDir, "banana.md"), "# Banana smoothie\n\nBlend 2 bananas, yogurt and honey for a banana smoothie.\n");
+  writeFileSync(join(docsDir, "banana.md"), "---\nqmd:\n  metadata:\n    kind: fruit\n---\n# Banana smoothie\n\nBlend 2 bananas, yogurt and honey for a banana smoothie.\n");
   writeFileSync(join(docsDir, "apple.md"), "# Apple pie\n\nApple pie recipe with a lattice crust and cinnamon.\n");
   const cfgDir = join(tmp, "qmd-config");
   mkdirSync(cfgDir, { recursive: true });
@@ -263,15 +263,21 @@ await client.connect(transport);
 const info = await client.getServerVersion();
 if (!info || info.name !== "qmd-remote") throw new Error("server name: " + JSON.stringify(info));
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-if (JSON.stringify(tools) !== JSON.stringify(["get", "multi_get", "query", "status"])) throw new Error("tools: " + JSON.stringify(tools));
+if (JSON.stringify(tools) !== JSON.stringify(["get", "metadata", "multi_get", "query", "status"])) throw new Error("tools: " + JSON.stringify(tools));
+const meta = await client.callTool({ name: "metadata", arguments: {} });
+if (!JSON.stringify(meta).includes("kind")) throw new Error("metadata result: " + JSON.stringify(meta).slice(0, 200));
 const q = await client.callTool({ name: "query", arguments: { query: "banana smoothie" } });
 if (!JSON.stringify(q).includes("banana.md")) throw new Error("query result: " + JSON.stringify(q).slice(0, 200));
+const qf = await client.callTool({ name: "query", arguments: { query: "banana smoothie", filter: { field: "kind", operator: "eq", value: "fruit" } } });
+if (!JSON.stringify(qf).includes("banana.md")) throw new Error("filtered query result: " + JSON.stringify(qf).slice(0, 200));
+const qbad = await client.callTool({ name: "query", arguments: { query: "banana", filter: { nonsense: true } } });
+if (!qbad.isError || !JSON.stringify(qbad).includes("Error")) throw new Error("malformed filter should error: " + JSON.stringify(qbad).slice(0, 200));
 await client.close();
 if (!(await exited)) throw new Error("server did not exit after client close");
 console.log("mcp-ok");
 `,
   );
-  await check("MCP: client over stdio (initialize/tools/query/exit) from consumer", async () => {
+  await check("MCP: client over stdio (initialize/tools/metadata/query+filter/exit) from consumer", async () => {
     const r = await run(NODE, [mcpTest, cliPath], { cwd: consumer, env });
     assert(r.code === 0, `mcp exit ${r.code}: ${r.err}`);
     assert(r.out.includes("mcp-ok"), "mcp-ok missing");

@@ -2,7 +2,8 @@
 
 **Status:** decisions agreed with user (interview 2026-11-21). P1 (version bump +
 seam update) done 2026-11-21; P2 (MCP re-sync) done 2026-11-21; P3 (CLI
-parity) done 2026-11-21. P4 (docs/README/consumer gate) open.
+parity) done 2026-11-21; P4 (docs/ADR/README + consumer gate) done
+2026-11-21 — all phases complete, 66/66 tests + consumer 6/6.
 
 ## Decisions (confirmed in interview)
 

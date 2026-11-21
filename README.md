@@ -151,13 +151,15 @@ from every message `qmd-remote` prints.
 qmd-remote update      [-c <col> ...]                  index collections (no model calls)
 qmd-remote embed       [-c <col>] [--force]            embed what update left
 qmd-remote query <text> [-c <col>] [-n <n>]
-                       [--no-rerank] [--lex-only]      hybrid search
+                       [--no-rerank] [--lex-only]
+                       [--filter <json>]               hybrid search (+ metadata filter)
 qmd-remote status                                      index counts (offline)
 qmd-remote doctor                                      config + live probe of every remote job
 qmd-remote mcp                                         MCP server over stdio (for agents)
 qmd-remote mcp --http --port <n> [--host <addr>]       MCP server over Streamable HTTP
                [--allowed-host <h>]... [--token <ref>]
 qmd-remote collections list | add <name> <path> [--pattern <glob>] | remove <name>
+qmd-remote collections metadata [name]                 typed metadata report (+ --json)
 
   -d, --db <path>      index.sqlite    (default: stock qmd location, or ./.qmd/index.sqlite)
       --config <path>  index.yml       (default: stock qmd location, or ./.qmd/index.yml)
@@ -170,6 +172,13 @@ Exit codes: `0` ok · `1` runtime/provider/config error · `2` usage error.
 
 `--lex-only` is the offline leg: BM25 only, zero model calls — useful when a
 provider is down or you are on a plane.
+
+`--filter <json>` narrows every result to documents whose **typed metadata**
+satisfies the filter (qmd 2.9.0's metadata engine — frontmatter in a
+`qmd.metadata:` block, a recursive `and`/`or`/`not` + `eq`/`in`/`contains`/…
+AST). Invalid JSON or an invalid filter fails with exit 2 before anything is
+searched. `collections metadata` lists which keys exist, their types, value
+counts and a preview; `status` points at it when the index carries metadata.
 
 ### Error semantics
 
@@ -194,7 +203,8 @@ provider is never reported green.
 
 ## MCP server (agents)
 
-`qmd-remote mcp` serves qmd's tool surface — `query`, `get`, `multi_get`,
+`qmd-remote mcp` serves qmd's tool surface — `query` (with an optional
+metadata `filter`), `metadata` (typed-key discovery), `get`, `multi_get`,
 `status`, plus the `qmd://{path}` resource — over stdio against the
 remote-wired store. One server process per agent; no model downloads when all
 jobs are remote.
@@ -292,6 +302,34 @@ job is remote, node-llama-cpp is never asked for a model.
 Remote jobs report stable model names (`api:openai-compat:<model>`), which feed
 qmd's own embedding fingerprints — switching provider or model reads as a model
 switch, and qmd re-embeds what it must.
+
+## Migrating existing data
+
+`qmd-remote` uses the same index files as stock qmd (spec D6), so upgrading the
+pin is a data migration question, not a re-setup one:
+
+- **What carries over unchanged:** your collections config (`index.yml`), the
+  BM25/FTS content, document state, and `~/.config/qmd-remote/config.json`
+  (provider jobs). Nothing about the provider setup is touched by the
+  migration.
+- **The one-way conversion:** qmd 2.9.0 restructures the vector index to be
+  collection-partitioned. The first command after upgrading (e.g.
+  `qmd-remote status` or `update`) converts it **in place** — resumable if
+  interrupted. There is no downgrade path back to a 2.8.x pin afterwards
+  (downgrading would require a full `qmd-remote embed --force`).
+- **Re-embedding:** embeddings are keyed by model. If your embed job's
+  provider/model did not change, your vectors stay valid and nothing is
+  re-embedded. If it did — or if a previous re-embed run was **aborted
+  mid-batch** (2.9.0 then reports "all content hashes already have
+  embeddings" while stale-space rows remain) — force it:
+  `qmd-remote embed --force`.
+- **Metadata backfill:** qmd 2.9.0 extracts typed metadata from a namespaced
+  `qmd.metadata:` frontmatter block. A plain `qmd-remote update` backfills it
+  for documents that already carry the block; docs without one are untouched
+  and simply have no typed metadata (frontmatter text stays searchable either
+  way).
+- **Running servers:** stop and restart any `qmd-remote mcp` (stdio or
+  `--http`) process after upgrading — it holds the pre-conversion index open.
 
 ## Compatibility
 

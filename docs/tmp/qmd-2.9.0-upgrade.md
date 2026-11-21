@@ -3,7 +3,9 @@
 **Status:** decisions agreed with user (interview 2026-11-21). P1 (version bump +
 seam update) done 2026-11-21; P2 (MCP re-sync) done 2026-11-21; P3 (CLI
 parity) done 2026-11-21; P4 (docs/ADR/README + consumer gate) done
-2026-11-21 — all phases complete, 66/66 tests + consumer 6/6.
+2026-11-21 — all phases complete, 70/70 tests + consumer 6/6. Review
+(2026-11-21-qmd-2.9.0-upgrade-implementation-review.md): PASS with findings;
+all findings + adopted suggestions fixed same day.
 
 ## Decisions (confirmed in interview)
 

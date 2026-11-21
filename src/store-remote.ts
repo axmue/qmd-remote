@@ -137,11 +137,14 @@ export async function createStoreRemote(options: CreateStoreRemoteOptions = {}):
   //     getLlm(store) for the embedding itself).
   const withLLMSessionForLlm = await importWithLLMSessionForLlm();
   const internalStore = store.internal;
-  store.searchVector = (q, opts) =>
-    withLLMSessionForLlm(
+  store.searchVector = async (q, opts) => {
+    // Parsed before the session opens — mirrors qmd's own 2.9.0 body
+    // (dist/index.js parses opts.filter, then withLLMSessionForLlm); async so
+    // a malformed filter REJECTS like qmd's own searchVector, not a sync throw.
+    const filter = opts?.filter === undefined ? undefined : parseMetadataFilter(opts.filter);
+    return (await withLLMSessionForLlm(
       backend,
       (session) => {
-        const filter = opts?.filter === undefined ? undefined : parseMetadataFilter(opts.filter);
         // The internal searchVec wrapper is typed for qmd's own session
         // class; ours is the same shape through the untyped dist import.
         return (internalStore.searchVec as (query: string, model: string, limit?: number, collection?: string | string[], session?: unknown, precomputedEmbedding?: unknown, filter?: unknown) => Promise<SearchResult[]>)(
@@ -149,7 +152,8 @@ export async function createStoreRemote(options: CreateStoreRemoteOptions = {}):
         );
       },
       { signal: opts?.signal, name: "searchVector" },
-    ) as Promise<SearchResult[]>;
+    )) as SearchResult[];
+  };
 
   // 4. seam completion: close() disposes the closure's pre-swap LlamaCpp, not
   //     the swapped-in backend — dispose both.

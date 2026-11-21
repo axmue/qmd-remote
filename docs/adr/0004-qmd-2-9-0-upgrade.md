@@ -64,11 +64,22 @@ Verified seam facts (stock 2.9.0 dist, read 2026-11-21):
    clean-machine test remains the regression proof for the no-download
    promise.
 4. **Full metadata-surface adoption** (D-C): SDK pass-through is free; the
-   MCP copy was re-synced verbatim (new `metadata` tool, `filter` input on
-   `query` with upstream's validation flow, 2.9.0 `status`/instructions
-   wording); the CLI gained `query --filter <json>`,
-   `collections metadata [name]` (table + `--json`, upstream parity for what
-   the public SDK exposes), and a `status` metadata hint line.
+   MCP copy was re-synced (new `metadata` tool, `filter` input on `query`
+   with upstream's validation flow, 2.9.0 `status`/instructions wording);
+   the CLI gained `query --filter <json>`, `collections metadata [name]`
+   (table + `--json`), and a `status` metadata hint line. **Verbatim scope:**
+   tool names, descriptions and input schemas are verbatim copies of
+   upstream; the `metadata` tool's *text rendering* is our own compact
+   formatter — upstream's `formatMetadataKeySummaries` lives in
+   unexported `dist/metadata-format.js` (the `structuredContent` field still
+   carries the verbatim `ListMetadataResult`); the CLI count wording is
+   ours where noted below. **Count semantics:** the public SDK exposes no
+   "documents with metadata" count (upstream's status line uses the
+   unexported `countDocumentsWithMetadata`), so our status hint and
+   `collections metadata` header say **"indexed files/documents"**
+   (`ListMetadataResult.documents` = documents in scope) rather than
+   claiming files *with* metadata; pending-extraction count likewise
+   omitted (not public).
 5. **Pin moves to `2.9.0` exactly** (D-E), node-llama-cpp 3.22.3 in
    allowScripts. The MCP copy marker and the `check:mcp-drift` script move
    with it; the drift check's coarse schema scan now strips string literals
@@ -99,5 +110,6 @@ Verified seam facts (stock 2.9.0 dist, read 2026-11-21):
   (tools: get, metadata, multi_get, query, status).
 - New behavior covered by tests that fail on the 2.8.3 tree: `searchVector`
   filter pass-through + malformed-filter rejection before any search (P1);
-  MCP `metadata` tool + `query` filter + malformed filter (P2); CLI
-  `--filter` / `collections metadata` / status hint (P3).
+  MCP `metadata` tool, `query` filter + typed `searches` branch +
+  malformed filter (P2); CLI `--filter` / `collections metadata` (incl.
+  unknown-collection usage error) / status hint (P3).

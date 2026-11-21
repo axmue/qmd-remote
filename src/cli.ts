@@ -8,7 +8,7 @@
  */
 import { existsSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { parseMetadataFilter, MetadataFilterError } from "@tobilu/qmd";
+import { parseMetadataFilter, MetadataFilterError, MetadataBindingBudgetError } from "@tobilu/qmd";
 import type { SearchOptions, MetadataFilter, ListMetadataResult, MetadataKeyTypeSummary } from "@tobilu/qmd";
 import { loadRemoteConfig } from "./config-file.js";
 import { createBackend } from "./backend/factory.js";
@@ -251,12 +251,13 @@ async function cmdStatus(p: Parsed): Promise<number> {
     // store.listMetadata — the public SDK does not expose a distinct
     // "documents with metadata" or "pending extraction" count (qmd 2.9.0
     // dist/cli/qmd.js uses countDocumentsWithMetadata / countDocumentsPendingMetadata
-    // internally), so the line reports documents in scope and omits any
-    // pending-extraction clause rather than guessing it.
+    // internally), so the line says "indexed files" (documents in scope, per
+    // ListMetadataResult.documents) rather than claiming files *with*
+    // metadata, and omits any pending-extraction clause rather than guessing it.
     const meta = await store.listMetadata();
     if (meta.totalKeys > 0) {
       const keyLabel = meta.totalKeys === 1 ? "key" : "keys";
-      console.log(`Metadata: ${meta.totalKeys} ${keyLabel} across ${meta.documents} files (explore with 'qmd-remote collections metadata')`);
+      console.log(`Metadata: ${meta.totalKeys} ${keyLabel} across ${meta.documents} indexed files (explore with 'qmd-remote collections metadata')`);
     }
     return 0;
   } finally {
@@ -441,7 +442,23 @@ async function cmdCollections(p: Parsed): Promise<number> {
     const name = p.positionals[1];
     const store = await openStore(p);
     try {
-      const result = await store.listMetadata({ collection: name, keyLimit: p.keyLimit, keyOffset: p.keyOffset });
+      // Validate the collection name — listMetadata would silently scope to
+      // nothing for an unknown one (upstream validates too).
+      if (name) {
+        const cols = await store.listCollections();
+        if (!cols.some((c) => c.name === name)) throw new UsageError(`collection "${name}" not found`);
+      }
+      let result: ListMetadataResult;
+      try {
+        result = await store.listMetadata({ collection: name, keyLimit: p.keyLimit, keyOffset: p.keyOffset });
+      } catch (err) {
+        // Pathological filter/key budget (upstream CLI exits 1 with the message).
+        if (err instanceof MetadataBindingBudgetError) {
+          console.error(`qmd-remote: ${err.message}`);
+          return 1;
+        }
+        throw err;
+      }
       if (p.json) {
         console.log(JSON.stringify(result, null, 2));
         return 0;
@@ -466,7 +483,7 @@ async function cmdCollections(p: Parsed): Promise<number> {
 function formatMetadataTable(result: ListMetadataResult, keyOffset: number): string[] {
   if (result.totalKeys === 0) return ["Metadata: none (add qmd.metadata frontmatter to a document and run 'qmd-remote update')"];
   const keyLabel = result.totalKeys === 1 ? "key" : "keys";
-  const lines = [`Metadata: ${result.totalKeys} ${keyLabel} across ${result.documents} documents`];
+  const lines = [`Metadata: ${result.totalKeys} ${keyLabel} across ${result.documents} indexed documents`];
   const typeLabel = (k: { types: MetadataKeyTypeSummary[] }): string => k.types.map((t) => (t.multiValued ? `${t.type}[]` : t.type)).join(" | ");
   const distinct = (k: { types: MetadataKeyTypeSummary[] }): number => k.types.reduce((s, t) => s + t.distinctValues, 0);
   const keyW = Math.max(...result.keys.map((k) => k.key.length));

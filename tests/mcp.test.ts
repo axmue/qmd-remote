@@ -191,6 +191,22 @@ test("mcp: initialize → tools/list → tools/call (query/get/status) over stdi
       });
       assert.equal(ff.isError, true);
       assert.match(JSON.stringify(ff), /Error:/);
+      // 8. query with typed `searches` sub-queries (the structuredSearch
+      //    branch, pre-expanded — no query-expansion call) still routes
+      //    through the remote-wired store and returns real hits.
+      const qs = await client.callTool({
+        name: "query",
+        arguments: { searches: [{ type: "lex", query: "banana smoothie" }] },
+      });
+      assert.equal(qs.isError ?? false, false, JSON.stringify(qs).slice(0, 300));
+      assert.match(JSON.stringify(qs), /banana\.md/);
+      // `query` and `searches` are mutually exclusive — a validation error,
+      // not a crash.
+      const qboth = await client.callTool({
+        name: "query",
+        arguments: { query: "banana", searches: [{ type: "lex", query: "banana" }] },
+      });
+      assert.equal(qboth.isError, true);
       const s2 = await client.callTool({ name: "status", arguments: {} });
       assert.match(JSON.stringify(s2), /Total documents: 2/);
     } finally {

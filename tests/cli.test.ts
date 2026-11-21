@@ -163,18 +163,24 @@ test("update + embed + query through the mock provider (CLI write+search path)",
 });
 
 test("embed: all-remote tokenizer never resolves a local model (clean-machine proof, no GGUF download)", async () => {
-  // CI regression (2026-11): qmd 2.8.3's chunkDocumentByTokens (dist/store.js,
-  // called by generateEmbeddings) resolves its tokenizer via the GLOBAL
+  // CI regression (2026-11, qmd 2.8.3): chunkDocumentByTokens (dist/store.js,
+  // called by generateEmbeddings) resolved its tokenizer via the GLOBAL
   // getDefaultLlamaCpp(), not the injected backend — so an all-remote `embed`
   // on a machine without the model cache downloaded + loaded the default
   // 318 MB embedding model from HuggingFace (the GitHub runner "test step
-  // runs forever" hang). createStoreRemote now sets qmd's global default to
-  // the composite, whose all-remote tokenize is pure in-memory code units.
+  // runs forever" hang). qmd-remote worked around it by setting the global
+  // default (ADR-0003); qmd 2.9.0 closed the hole upstream — the embed path
+  // now chunks via chunkDocumentByTokensWithLlm(llm, …) with the store's
+  // injected llm (dist/store.js:2262/2658) — and the workaround was retired
+  // (ADR-0004). This test remains the regression proof: our backend's
+  // all-remote tokenize is pure in-memory code units, so nothing ever
+  // resolves a local model.
   //
   // Deterministic without network: fresh HOME (empty model cache) +
-  // QMD_EMBED_MODEL pointing at a nonexistent file. Without the global-seam
-  // fix, the tokenizer step fails on that file (or would download the 318 MB
-  // default with the env var unset); with the fix, nothing ever resolves it.
+  // QMD_EMBED_MODEL pointing at a nonexistent file. If the store's llm ever
+  // stopped covering the chunking tokenizer, the tokenizer step fails on
+  // that file (or downloads the 318 MB default with the env var unset);
+  // today, nothing ever resolves it.
   const mock = await mockProvider(false);
   const f = makeFixture(REMOTE_JOBS(mock.url));
   const freshHome = mkdtempSync(join(tmpdir(), "qmd-remote-freshhome-"));
@@ -359,7 +365,7 @@ test("collections metadata: table shows the seeded key; --json emits the raw Lis
 
   r = await runCli(f, ["collections", "metadata"]);
   assert.equal(r.code, 0, r.err);
-  assert.match(r.out, /Metadata: 1 key across 3 documents/);
+  assert.match(r.out, /Metadata: 1 key across 3 indexed documents/);
   assert.match(r.out, /type\s+string\s+2 docs\s+1 distinct\s+bug \(2\)/);
 
   r = await runCli(f, ["collections", "metadata", "--json"]);
@@ -375,6 +381,12 @@ test("collections metadata: table shows the seeded key; --json emits the raw Lis
   assert.equal(meta.keys[0]!.types[0]!.type, "string");
   assert.equal(meta.keys[0]!.types[0]!.values[0]!.value, "bug");
   assert.equal(meta.keys[0]!.types[0]!.values[0]!.documents, 2);
+
+  // An unknown collection name is a usage error, not a silent empty report
+  // (listMetadata would just scope to nothing).
+  r = await runCli(f, ["collections", "metadata", "nosuchcol"]);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /collection "nosuchcol" not found/);
 });
 
 test("status: metadata hint line appears only when documents carry metadata", async () => {
@@ -390,7 +402,7 @@ test("status: metadata hint line appears only when documents carry metadata", as
   assert.equal(r.code, 0, r.err);
   r = await runCli(f, ["status"]);
   assert.equal(r.code, 0, r.err);
-  assert.match(r.out, /Metadata: 1 key across 3 files \(explore with 'qmd-remote collections metadata'\)/);
+  assert.match(r.out, /Metadata: 1 key across 3 indexed files \(explore with 'qmd-remote collections metadata'\)/);
 });
 
 test("--version prints the package version", async () => {

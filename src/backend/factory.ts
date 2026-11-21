@@ -52,7 +52,7 @@ export interface QmdBackendOptions {
   /**
    * Injectable LlamaCpp constructor (test hook). Default: the real one,
    * imported by file-URL from the installed @tobilu/qmd dist (the package
-   * exports map blocks subpath imports; the exact 2.8.3 pin makes the
+   * exports map blocks subpath imports; the exact 2.9.0 pin makes the
    * dist path as durable as any textual reference).
    */
   llamaCtor?: QmdLlamaCppCtor;

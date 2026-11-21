@@ -1,6 +1,8 @@
 # qmd 2.9.0 Upgrade — living plan
 
-**Status:** decisions agreed with user (interview 2026-11-21); implementation not started.
+**Status:** decisions agreed with user (interview 2026-11-21). P1 (version bump +
+seam update) done 2026-11-21; P2 (MCP re-sync) done 2026-11-21; P3 (CLI
+parity) done 2026-11-21. P4 (docs/README/consumer gate) open.
 
 ## Decisions (confirmed in interview)
 

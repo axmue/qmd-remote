@@ -8,7 +8,8 @@
  */
 import { existsSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import type { SearchOptions } from "@tobilu/qmd";
+import { parseMetadataFilter, MetadataFilterError } from "@tobilu/qmd";
+import type { SearchOptions, MetadataFilter, ListMetadataResult, MetadataKeyTypeSummary } from "@tobilu/qmd";
 import { loadRemoteConfig } from "./config-file.js";
 import { createBackend } from "./backend/factory.js";
 import { createStoreRemote, defaultQmdDbPath, defaultQmdConfigPath } from "./store-remote.js";
@@ -28,12 +29,13 @@ Commands:
   update      [-c <col> ...]                    index the collections (no embeddings)
   embed       [-c <col>] [--force]              embed what update left, via the configured providers
   query       <text> [-c <col>] [-n <n>]        hybrid search (remote expand + embed + rerank)
-              [--no-rerank] [--lex-only]
+              [--no-rerank] [--lex-only] [--filter <json>]
   status      [index counts; offline]
   doctor      [config check + live probe of every remote job]
   mcp         [serve over stdio (default) — for agent configs]
               [--http --port <n> [--host <addr>] [--allowed-host <h>]... [--token <ref>]]
   collections list | add <name> <path> [--pattern <glob>] | remove <name>
+              metadata [name] [--key-limit <n>] [--key-offset <n>]   metadata keys/values to filter on
 
 Options:
   -d, --db <path>     index.sqlite (default: stock qmd location, or .qmd/index.sqlite)
@@ -44,6 +46,10 @@ Options:
       --port <n>      HTTP port
       --allowed-host <h>  repeatable Host-header allowlist entry (DNS-rebind guard)
       --token <ref>   optional HTTP bearer token: literal, env:VAR, or file:/path
+      --filter <json> metadata filter for query (JSON predicate,
+                      e.g. '{"field":"type","operator":"eq","value":"bug"}')
+      --key-limit <n>   keys reported by 'collections metadata' (default 50)
+      --key-offset <n>  keys skipped by 'collections metadata' (default 0)
       --json          machine-readable output (status, collections, doctor, query)
   -h, --help          usage
   -V, --version       print the version
@@ -69,7 +75,11 @@ interface Parsed {
   noRerank: boolean;
   lexOnly: boolean;
   limit?: number;
+  /** raw --filter JSON string (query); parsed + validated before any search. */
+  filter?: string;
   pattern?: string;
+  keyLimit?: number;
+  keyOffset?: number;
   help: boolean;
   version: boolean;
   /** canonical names of the options actually given (for per-command validation). */
@@ -90,6 +100,9 @@ const VALUE_FLAGS = new Map<string, string>([
   ["-c", "collection"],
   ["--collection", "collection"],
   ["--pattern", "pattern"],
+  ["--filter", "filter"],
+  ["--key-limit", "key-limit"],
+  ["--key-offset", "key-offset"],
 ]);
 const BOOL_FLAGS = new Map<string, string>([
   ["--json", "json"],
@@ -107,11 +120,11 @@ const BOOL_FLAGS = new Map<string, string>([
 const COMMAND_FLAGS: Record<string, string[]> = {
   update: ["db", "config", "jobs", "json", "collection"],
   embed: ["db", "config", "jobs", "json", "collection", "force"],
-  query: ["db", "config", "jobs", "json", "collection", "limit", "no-rerank", "lex-only"],
+  query: ["db", "config", "jobs", "json", "collection", "limit", "no-rerank", "lex-only", "filter"],
   status: ["db", "config", "jobs", "json"],
   doctor: ["db", "config", "jobs", "json"],
   mcp: ["db", "config", "jobs", "http", "host", "port", "allowed-host", "token"],
-  collections: ["db", "config", "jobs", "json", "pattern"],
+  collections: ["db", "config", "jobs", "json", "pattern", "key-limit", "key-offset"],
 };
 
 function parseArgs(argv: string[]): Parsed {
@@ -173,6 +186,16 @@ function parseArgs(argv: string[]): Parsed {
         p.limit = n;
       } else if (key === "-c" || key === "--collection") p.collections.push(value);
       else if (key === "--pattern") p.pattern = value;
+      else if (key === "--filter") p.filter = value;
+      else if (key === "--key-limit") {
+        const n = Number(value);
+        if (!Number.isInteger(n) || n < 1) throw new UsageError(`option --key-limit needs a positive integer, got "${value}"`);
+        p.keyLimit = n;
+      } else if (key === "--key-offset") {
+        const n = Number(value);
+        if (!Number.isInteger(n) || n < 0) throw new UsageError(`option --key-offset needs a non-negative integer, got "${value}"`);
+        p.keyOffset = n;
+      }
     } else {
       p.positionals.push(a);
     }
@@ -223,6 +246,17 @@ async function cmdStatus(p: Parsed): Promise<number> {
       for (const c of cols) console.log(`  ${c.name}\t${c.pwd}\t${c.doc_count} docs`);
     } else {
       console.log("Collections: (none — use 'qmd-remote collections add <name> <path>')");
+    }
+    // Metadata hint, mirroring qmd's own status line. Counts come from
+    // store.listMetadata — the public SDK does not expose a distinct
+    // "documents with metadata" or "pending extraction" count (qmd 2.9.0
+    // dist/cli/qmd.js uses countDocumentsWithMetadata / countDocumentsPendingMetadata
+    // internally), so the line reports documents in scope and omits any
+    // pending-extraction clause rather than guessing it.
+    const meta = await store.listMetadata();
+    if (meta.totalKeys > 0) {
+      const keyLabel = meta.totalKeys === 1 ? "key" : "keys";
+      console.log(`Metadata: ${meta.totalKeys} ${keyLabel} across ${meta.documents} files (explore with 'qmd-remote collections metadata')`);
     }
     return 0;
   } finally {
@@ -306,16 +340,37 @@ function toHit(h: { file?: string; filepath?: string; displayPath?: string; titl
   return { file: f, displayPath: h.displayPath ?? f, title: h.title ?? "", score: h.score };
 }
 
+/**
+ * Parse + strictly validate --filter <json> before any search (fail-loud, D7):
+ * qmd's own parseMetadataFilter rejects unknown operators/properties and
+ * operator-incompatible values and names the JSON path of the failing node.
+ */
+function parseFilter(raw: string): MetadataFilter {
+  let ast: unknown;
+  try {
+    ast = JSON.parse(raw);
+  } catch (err) {
+    throw new UsageError(`--filter is not valid JSON: ${err instanceof Error ? err.message : String(err)} (example: --filter '{"field":"type","operator":"eq","value":"bug"}')`);
+  }
+  try {
+    return parseMetadataFilter(ast);
+  } catch (err) {
+    if (err instanceof MetadataFilterError) throw new UsageError(`--filter is not a valid metadata filter: ${err.message}`);
+    throw err;
+  }
+}
+
 async function cmdQuery(p: Parsed): Promise<number> {
   const text = p.positionals.join(" ").trim();
   if (!text) throw new UsageError("query needs a search text: qmd-remote query <text>");
+  const filter = p.filter !== undefined ? parseFilter(p.filter) : undefined;
   const store = await openStore(p);
   try {
     let hits: SearchHit[];
     if (p.lexOnly) {
-      hits = (await store.searchLex(text, { limit: p.limit, collection: collectionFilter(p) })).map(toHit);
+      hits = (await store.searchLex(text, { limit: p.limit, collection: collectionFilter(p), filter })).map(toHit);
     } else {
-      const opts: SearchOptions = { query: text, limit: p.limit };
+      const opts: SearchOptions = { query: text, limit: p.limit, filter };
       const cols = collectionFilter(p);
       if (cols) opts.collections = cols;
       if (p.noRerank) opts.rerank = false;
@@ -382,7 +437,76 @@ async function cmdCollections(p: Parsed): Promise<number> {
       await store.close();
     }
   }
-  throw new UsageError(`unknown collections subcommand: ${sub ?? ""} (list | add | remove)`);
+  if (sub === "metadata") {
+    const name = p.positionals[1];
+    const store = await openStore(p);
+    try {
+      const result = await store.listMetadata({ collection: name, keyLimit: p.keyLimit, keyOffset: p.keyOffset });
+      if (p.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return 0;
+      }
+      for (const line of formatMetadataTable(result, p.keyOffset ?? 0)) console.log(line);
+      return 0;
+    } finally {
+      await store.close();
+    }
+  }
+  throw new UsageError(`unknown collections subcommand: ${sub ?? ""} (list | add | remove | metadata)`);
+}
+
+/**
+ * Plain-text table for `collections metadata`, adapted from qmd 2.9.0's
+ * formatMetadataOverview (dist/metadata-format.js): header with key count,
+ * aligned key / types / documents / distinct columns, a short value preview
+ * per key, and a footer naming the keys left outside the window. No colors
+ * (CLI convention). The preview is noise when every string value is unique,
+ * so it is omitted then — same rule as upstream.
+ */
+function formatMetadataTable(result: ListMetadataResult, keyOffset: number): string[] {
+  if (result.totalKeys === 0) return ["Metadata: none (add qmd.metadata frontmatter to a document and run 'qmd-remote update')"];
+  const keyLabel = result.totalKeys === 1 ? "key" : "keys";
+  const lines = [`Metadata: ${result.totalKeys} ${keyLabel} across ${result.documents} documents`];
+  const typeLabel = (k: { types: MetadataKeyTypeSummary[] }): string => k.types.map((t) => (t.multiValued ? `${t.type}[]` : t.type)).join(" | ");
+  const distinct = (k: { types: MetadataKeyTypeSummary[] }): number => k.types.reduce((s, t) => s + t.distinctValues, 0);
+  const keyW = Math.max(...result.keys.map((k) => k.key.length));
+  const typeW = Math.max(...result.keys.map((k) => typeLabel(k).length));
+  const docW = Math.max(...result.keys.map((k) => String(k.documents).length));
+  const distW = Math.max(...result.keys.map((k) => String(distinct(k)).length));
+  for (const k of result.keys) {
+    const cols = [
+      k.key.padEnd(keyW),
+      typeLabel(k).padEnd(typeW),
+      `${String(k.documents).padStart(docW)} ${k.documents === 1 ? "doc " : "docs"}`,
+      `${String(distinct(k)).padStart(distW)} distinct`,
+    ];
+    const preview = k.types.length > 1
+      ? k.types.map((t) => `${t.type}: ${typeValuePreview(t)}`).filter((s) => s !== "").join("  ")
+      : typeValuePreview(k.types[0]!);
+    if (preview) cols.push(preview);
+    lines.push(`  ${cols.join("  ")}`);
+  }
+  if (result.remainingKeys > 0) {
+    const label = result.remainingKeys === 1 ? "key" : "keys";
+    lines.push(`  ${result.remainingKeys} more ${label} — use --key-offset ${keyOffset + result.keys.length}`);
+  }
+  return lines;
+}
+
+/** Compact per-type value preview: `value (docs), …` (truncated), range for numbers, counts for booleans. */
+function typeValuePreview(t: MetadataKeyTypeSummary): string {
+  if (t.type === "boolean") return t.values.map((v) => `${v.value ? "true" : "false"} (${v.documents})`).join(", ");
+  if (t.type === "number") return t.range ? `${t.range.min} to ${t.range.max}, median ${t.range.median}` : "";
+  if (t.distinctValues === t.documents) return ""; // every value unique — a list would be noise (upstream rule)
+  const items = t.values.map((v) => `${formatScalar(v.value)} (${v.documents})`);
+  if (t.remainingValues > 0) items.push("…");
+  return items.join(", ");
+}
+
+/** A scalar prints bare when it cannot be mistaken for layout; otherwise as a JSON string. */
+function formatScalar(v: string | number | boolean): string {
+  if (typeof v !== "string") return String(v);
+  return /^[A-Za-z0-9._/-]+$/.test(v) ? v : JSON.stringify(v);
 }
 
 async function cmdDoctor(p: Parsed): Promise<number> {

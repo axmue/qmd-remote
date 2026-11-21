@@ -285,6 +285,114 @@ test("embed against a 401 provider → exit 1, provider error surfaces (D7, no l
   }
 });
 
+/** Overwrite a fixture doc with a `qmd.metadata` frontmatter block (qmd's documented namespace). */
+function writeMetaDoc(f: Fixture, file: string, key: string, value: string): void {
+  writeFileSync(
+    join(f.root, "docs", file),
+    `---\nqmd:\n  metadata:\n    ${key}: ${value}\n---\n\n# ${file}\n\nBody text about ${file}.\n`,
+  );
+}
+
+test("query --filter: only documents matching the metadata filter are returned", async () => {
+  const mock = await mockProvider(false);
+  const f = makeFixture(ALL_LOCAL);
+  f.setJobs(REMOTE_JOBS(mock.url));
+  writeMetaDoc(f, "banana.md", "type", "bug"); // apple.md / zebra.md carry no metadata
+  try {
+    let r = await runCli(f, ["update"]);
+    assert.equal(r.code, 0, r.err);
+    r = await runCli(f, ["embed"]);
+    assert.equal(r.code, 0, r.err);
+
+    // hybrid path (expand + embed + rerank), filter applied
+    r = await runCli(f, ["query", "banana", "smoothie", "--filter", '{"field":"type","operator":"eq","value":"bug"}']);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /banana\.md/);
+    assert.doesNotMatch(r.out, /apple\.md|zebra\.md/);
+
+    // a filter no document satisfies empties the result
+    r = await runCli(f, ["query", "banana", "smoothie", "--filter", '{"field":"type","operator":"eq","value":"feat"}']);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /No results\./);
+
+    // lex-only path: the filter applies there too, and needs no provider
+    r = await runCli(f, ["query", "banana", "--lex-only", "--filter", '{"field":"type","operator":"eq","value":"bug"}']);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /banana\.md/);
+    assert.doesNotMatch(r.out, /apple\.md|zebra\.md/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("query --filter: invalid JSON / invalid predicate → usage error, no search performed", async () => {
+  const mock = await mockProvider(false);
+  const f = makeFixture(ALL_LOCAL);
+  f.setJobs(REMOTE_JOBS(mock.url));
+  try {
+    let r = await runCli(f, ["query", "banana", "--filter", "{not json"]);
+    assert.equal(r.code, 2, r.err);
+    assert.match(r.err, /--filter is not valid JSON/);
+
+    r = await runCli(f, ["query", "banana", "--filter", '{"field":"type","operator":"nonsense","value":"bug"}']);
+    assert.equal(r.code, 2, r.err);
+    assert.match(r.err, /--filter is not a valid metadata filter/);
+
+    // the filter is validated before the store opens — nothing may have searched
+    assert.equal(mock.hits["/v1/embeddings"]?.length ?? 0, 0);
+    assert.equal(mock.hits["/v1/rerank"]?.length ?? 0, 0);
+    assert.equal(mock.hits["/v1/chat/completions"]?.length ?? 0, 0);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("collections metadata: table shows the seeded key; --json emits the raw ListMetadataResult", async () => {
+  const f = makeFixture(ALL_LOCAL);
+  // two docs, one shared value: the preview lists `value (documents)` (upstream
+  // omits the preview when every value is unique, so a single doc would not
+  // show one)
+  writeMetaDoc(f, "banana.md", "type", "bug");
+  writeMetaDoc(f, "apple.md", "type", "bug");
+  let r = await runCli(f, ["update"]);
+  assert.equal(r.code, 0, r.err);
+
+  r = await runCli(f, ["collections", "metadata"]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /Metadata: 1 key across 3 documents/);
+  assert.match(r.out, /type\s+string\s+2 docs\s+1 distinct\s+bug \(2\)/);
+
+  r = await runCli(f, ["collections", "metadata", "--json"]);
+  assert.equal(r.code, 0, r.err);
+  const meta = JSON.parse(r.out) as {
+    totalKeys: number;
+    documents: number;
+    keys: { key: string; types: { type: string; values: { value: string; documents: number }[] }[] }[];
+  };
+  assert.equal(meta.totalKeys, 1);
+  assert.equal(meta.documents, 3);
+  assert.equal(meta.keys[0]!.key, "type");
+  assert.equal(meta.keys[0]!.types[0]!.type, "string");
+  assert.equal(meta.keys[0]!.types[0]!.values[0]!.value, "bug");
+  assert.equal(meta.keys[0]!.types[0]!.values[0]!.documents, 2);
+});
+
+test("status: metadata hint line appears only when documents carry metadata", async () => {
+  const f = makeFixture(ALL_LOCAL);
+  let r = await runCli(f, ["update"]);
+  assert.equal(r.code, 0, r.err);
+  r = await runCli(f, ["status"]);
+  assert.equal(r.code, 0, r.err);
+  assert.doesNotMatch(r.out, /Metadata:/);
+
+  writeMetaDoc(f, "apple.md", "type", "bug");
+  r = await runCli(f, ["update"]);
+  assert.equal(r.code, 0, r.err);
+  r = await runCli(f, ["status"]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /Metadata: 1 key across 3 files \(explore with 'qmd-remote collections metadata'\)/);
+});
+
 test("--version prints the package version", async () => {
   const f = makeFixture(ALL_LOCAL);
   const r = await runCli(f, ["--version"]);
